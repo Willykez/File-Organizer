@@ -9,6 +9,14 @@ document lists what changed in the Kotlin/Compose rewrite and why.
   and an activity `.DebugActivity` — neither class existed anywhere in the source. Any code path
   that triggered them would crash. Replaced with a real `FileOrganizerApp` and removed the dead
   activity entry.
+- **SD card ignored by several cleanup commands.** "Delete Empty Folders", "Clean Gradle Cache",
+  and the TikTok/Instagram cache cleaners hardcoded `Environment.getExternalStorageDirectory()`
+  (internal storage) as their only target, so an SD card was silently skipped even when present.
+  A new `StorageVolumeManager` detects every mounted volume (internal + SD card/USB-OTG), the
+  scanner tags each file with which volume it came from, and these commands now loop over every
+  detected volume. "Organize"/"Move" commands also now keep each file on its own volume instead of
+  always funneling everything back to internal storage — a screenshot found on the SD card is
+  organized into `<sdcard>/Organized/Screenshots`, not copied to internal storage.
 - **Hardcoded API keys committed to source.** Two separate Gemini API keys were hardcoded in
   `CommandParser.java` and `MainActivity.java`. Keys are now read from `BuildConfig`, itself
   sourced from a gitignored `local.properties` entry or a CI secret — never from source code.
@@ -33,15 +41,20 @@ document lists what changed in the Kotlin/Compose rewrite and why.
 - **Undo for move operations.** Every move now records its source/destination so a batch of
   commands can be reversed from the Log tab. Deletes remain irreversible and are called out as
   such in the confirmation dialog.
+- **Storage scope selector.** The Commands tab shows every detected volume (with free/total
+  space) and lets you scope execution to "All Storage", "Internal Only", or "SD Card Only" — the
+  option only appears once an SD card is actually detected.
 - **Background automation via WorkManager.** "Daily Auto-Organize" and "Nightly Cleanup" were
   present in the original UI as selectable commands but the executor treated both as
   `Not implemented`. They're now real scheduled jobs.
+- **Multi-volume storage support.** Every command that used to assume "storage" meant internal
+  storage now operates across every mounted volume (see the SD card fix above).
 - **Persisted preferences (DataStore).** Selected commands and automation toggles now survive an
   app restart; previously nothing was persisted beyond the file metadata cache itself.
 - **Cancellable, coroutine-based execution.** Long-running scans/commands can be cancelled from
   the Log tab instead of having to force-close the app.
 - **Live file preview** before running a command, showing exactly what will be touched.
-- Unit tests for the offline command parser and file-type resolver.
+- Unit tests for the offline command parser, file-type resolver, and volume-aware metadata model.
 
 ## Unchanged by design
 

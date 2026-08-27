@@ -11,6 +11,10 @@ same app. See [MIGRATION.md](MIGRATION.md) for exactly what changed and why.
 
 - **35 file operations** across Organization, Move & Relocate, Clean Up, Social Media, Developer
   Tools, Storage Analysis, and Automation
+- **Full SD card support** — scanning, cleanup, and organizing all operate across every detected
+  storage volume (internal + SD card/USB-OTG), not just internal storage. A scope selector on the
+  Commands tab lets you restrict a run to "Internal Only" or "SD Card Only" when an SD card is
+  present; "Move to SD Card" commands remain a deliberate exception for pulling files onto it
 - **AI Chat tab** — describe what you want in plain English or Swahili ("panga picha za skrini",
   "clean up my whatsapp junk") and it detects the matching command; works fully offline, with an
   optional Gemini-powered mode for more natural replies

@@ -3,6 +3,7 @@ package com.willykez.files.data
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +18,7 @@ class PreferencesManager(private val context: Context) {
         val SELECTED_COMMANDS = stringSetPreferencesKey("selected_commands")
         val AUTO_ORGANIZE_ENABLED = booleanPreferencesKey("auto_organize_enabled")
         val NIGHTLY_CLEANUP_ENABLED = booleanPreferencesKey("nightly_cleanup_enabled")
+        val STORAGE_SCOPE = stringPreferencesKey("storage_scope")
     }
 
     val selectedCommandNames: Flow<Set<String>> =
@@ -38,5 +40,13 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setNightlyCleanupEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.NIGHTLY_CLEANUP_ENABLED] = enabled }
+    }
+
+    /** Which storage volume(s) commands should act on — stores a [com.willykez.files.ui.StorageScope] name. */
+    val storageScope: Flow<String> =
+        context.dataStore.data.map { it[Keys.STORAGE_SCOPE] ?: "ALL" }
+
+    suspend fun setStorageScope(scope: String) {
+        context.dataStore.edit { it[Keys.STORAGE_SCOPE] = scope }
     }
 }

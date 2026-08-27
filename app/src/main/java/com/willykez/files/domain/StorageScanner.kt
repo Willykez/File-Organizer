@@ -1,7 +1,6 @@
 package com.willykez.files.domain
 
 import android.content.Context
-import android.os.Environment
 import com.willykez.files.data.model.FileMetadata
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -10,10 +9,11 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.ArrayDeque
 
-data class ScanProgress(val filesFound: Int, val currentFolder: String)
+data class ScanProgress(val filesFound: Int, val currentFolder: String, val currentVolumeLabel: String)
 
 /**
- * Walks external storage (and any secondary volumes) for file metadata.
+ * Walks every detected storage volume (internal storage, plus any SD card / USB-OTG storage) for
+ * file metadata, tagging each file with which volume it came from.
  *
  * Rewritten from the original recursive Java implementation to an iterative, coroutine-friendly
  * walk: a deep folder tree (node_modules, .git, gradle caches…) could previously blow the call
@@ -22,49 +22,43 @@ data class ScanProgress(val filesFound: Int, val currentFolder: String)
  */
 class StorageScanner(private val context: Context) {
 
+    private val volumeManager = StorageVolumeManager(context)
     private val excludedFolders = setOf("android", "lost.dir")
 
     suspend fun scanAll(onProgress: suspend (ScanProgress) -> Unit = {}): List<FileMetadata> =
         withContext(Dispatchers.IO) {
             val result = mutableListOf<FileMetadata>()
-            val roots = mutableListOf<File>()
+            val volumes = volumeManager.listVolumes()
 
-            Environment.getExternalStorageDirectory()?.let { if (it.exists()) roots += it }
-
-            val primary = Environment.getExternalStorageDirectory()
-            context.getExternalFilesDirs(null)?.forEach { dir ->
-                if (dir == null) return@forEach
-                var root: File = dir
-                repeat(4) { root.parentFile?.let { root = it } }
-                if (root != primary && root.exists()) roots += root
-            }
-
-            val queue = ArrayDeque<File>()
-            roots.forEach { queue.add(it) }
-
-            while (queue.isNotEmpty()) {
+            for (volume in volumes) {
                 currentCoroutineContext().ensureActive()
-                val dir = queue.poll() ?: continue
-                if (!dir.canRead()) continue
-                val children = dir.listFiles() ?: continue
+                val queue = ArrayDeque<File>()
+                queue.add(volume.root)
 
-                for (child in children) {
-                    if (child.isDirectory) {
-                        val n = child.name.lowercase()
-                        if (n in excludedFolders || n.startsWith(".")) continue
-                        queue.add(child)
-                    } else {
-                        result += child.toMetadata()
+                while (queue.isNotEmpty()) {
+                    currentCoroutineContext().ensureActive()
+                    val dir = queue.poll() ?: continue
+                    if (!dir.canRead()) continue
+                    val children = dir.listFiles() ?: continue
+
+                    for (child in children) {
+                        if (child.isDirectory) {
+                            val n = child.name.lowercase()
+                            if (n in excludedFolders || n.startsWith(".")) continue
+                            queue.add(child)
+                        } else {
+                            result += child.toMetadata(volume)
+                        }
                     }
-                }
-                if (result.size % 250 < children.size) {
-                    onProgress(ScanProgress(result.size, dir.path))
+                    if (result.size % 250 < children.size) {
+                        onProgress(ScanProgress(result.size, dir.path, volume.label))
+                    }
                 }
             }
             result
         }
 
-    private fun File.toMetadata(): FileMetadata {
+    private fun File.toMetadata(volume: StorageVolume): FileMetadata {
         val dot = name.lastIndexOf('.')
         val ext = if (dot > 0 && dot != name.length - 1) name.substring(dot + 1).lowercase() else ""
         return FileMetadata(
@@ -73,7 +67,9 @@ class StorageScanner(private val context: Context) {
             parentPath = parent ?: "",
             sizeBytes = length(),
             extension = ext,
-            lastModified = lastModified()
+            lastModified = lastModified(),
+            volumeRoot = volume.root.absolutePath,
+            isRemovable = volume.isRemovable
         )
     }
 }

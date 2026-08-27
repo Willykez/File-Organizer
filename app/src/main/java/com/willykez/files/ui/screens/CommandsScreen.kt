@@ -40,7 +40,9 @@ import com.willykez.files.data.model.Category
 import com.willykez.files.data.model.CommandType
 import com.willykez.files.data.model.Cost
 import com.willykez.files.domain.formatSize
+import com.willykez.files.ui.StorageScope
 import com.willykez.files.ui.UiState
+import com.willykez.files.ui.VolumeInfo
 import com.willykez.files.ui.components.GlassCard
 import com.willykez.files.ui.components.GlowButton
 import com.willykez.files.ui.theme.Aurora2
@@ -65,7 +67,8 @@ fun CommandsScreen(
     onClearSelection: () -> Unit,
     onExecute: () -> Unit,
     onToggleAutoOrganize: (Boolean) -> Unit = {},
-    onToggleNightlyCleanup: (Boolean) -> Unit = {}
+    onToggleNightlyCleanup: (Boolean) -> Unit = {},
+    onScopeChange: (StorageScope) -> Unit = {}
 ) {
     val query = state.searchQuery.lowercase()
     val categories = Category.entries.filter { it != Category.AUTOMATION }
@@ -94,6 +97,13 @@ fun CommandsScreen(
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            item {
+                StorageScopeCard(
+                    volumes = state.volumes,
+                    scope = state.storageScope,
+                    onScopeChange = onScopeChange
+                )
+            }
             item {
                 AutomationCard(
                     autoOrganizeEnabled = state.autoOrganizeEnabled,
@@ -126,6 +136,70 @@ fun CommandsScreen(
 
             item { Spacer(Modifier.height(88.dp)) }
         }
+    }
+}
+
+@Composable
+private fun StorageScopeCard(
+    volumes: List<VolumeInfo>,
+    scope: StorageScope,
+    onScopeChange: (StorageScope) -> Unit
+) {
+    val sdCards = volumes.filter { it.isRemovable }
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text("💾 Storage", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Spacer(Modifier.height(8.dp))
+
+            volumes.forEach { volume ->
+                VolumeRow(volume)
+                Spacer(Modifier.height(4.dp))
+            }
+
+            if (sdCards.isEmpty()) {
+                Text("No SD card detected.", color = TextDim, fontSize = 11.sp)
+            } else {
+                Spacer(Modifier.height(6.dp))
+                Text("Run commands on:", color = TextMid, fontSize = 11.sp)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ScopeChip("All Storage", scope == StorageScope.ALL) { onScopeChange(StorageScope.ALL) }
+                    ScopeChip("Internal Only", scope == StorageScope.INTERNAL) { onScopeChange(StorageScope.INTERNAL) }
+                    ScopeChip("SD Card Only", scope == StorageScope.SD_CARD) { onScopeChange(StorageScope.SD_CARD) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VolumeRow(volume: VolumeInfo) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(if (volume.isRemovable) "💳" else "📱", fontSize = 13.sp)
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(volume.label, color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            if (volume.totalBytes > 0) {
+                Text(
+                    "${formatSize(volume.freeBytes)} free of ${formatSize(volume.totalBytes)}",
+                    color = TextDim, fontSize = 10.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScopeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) Primary.copy(alpha = 0.2f) else Glass2)
+            .border(1.dp, if (selected) Primary else BorderGlass, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Text(label, color = if (selected) Primary else TextMid, fontSize = 10.5.sp, fontWeight = FontWeight.Medium)
     }
 }
 

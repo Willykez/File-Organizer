@@ -17,8 +17,10 @@ import com.willykez.files.domain.CommandParser
 import com.willykez.files.domain.GeminiClient
 import com.willykez.files.domain.ScanProgress
 import com.willykez.files.domain.StorageScanner
+import com.willykez.files.domain.StorageVolumeManager
 import com.willykez.files.domain.formatSize
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,13 +28,28 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private suspend fun Flow<Set<String>>.firstOrNullSafe(): Set<String> =
     runCatching { first() }.getOrDefault(emptySet())
 
+private suspend fun <T> withContextIo(block: () -> T): T = withContext(Dispatchers.IO) { block() }
+
 enum class LogLevel { SUCCESS, WARN, ERROR, INFO }
 data class LogLine(val text: String, val level: LogLevel)
 data class ChatMessage(val role: String, val text: String, val detectedCommand: CommandType? = null)
+
+/** Which storage volume(s) the Commands tab and executor should act on. */
+enum class StorageScope { ALL, INTERNAL, SD_CARD }
+
+data class VolumeInfo(
+    val root: String,
+    val label: String,
+    val isRemovable: Boolean,
+    val isPrimary: Boolean,
+    val freeBytes: Long,
+    val totalBytes: Long
+)
 
 data class UiState(
     val hasStoragePermission: Boolean = false,
@@ -63,7 +80,10 @@ data class UiState(
     val canUndo: Boolean = false,
 
     val autoOrganizeEnabled: Boolean = false,
-    val nightlyCleanupEnabled: Boolean = false
+    val nightlyCleanupEnabled: Boolean = false,
+
+    val storageScope: StorageScope = StorageScope.ALL,
+    val volumes: List<VolumeInfo> = emptyList()
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -72,6 +92,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val scanner = StorageScanner(application)
     private val executor = CommandExecutor(application)
     private val preferences = PreferencesManager(application)
+    private val volumeManager = StorageVolumeManager(application)
     private val gemini = GeminiClient(BuildConfig.GEMINI_API_KEY)
     private val chatContextHistory = mutableListOf<String>()
 
@@ -112,6 +133,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             preferences.nightlyCleanupEnabled.collectLatest { v -> _uiState.update { it.copy(nightlyCleanupEnabled = v) } }
         }
+        viewModelScope.launch {
+            val savedScope = runCatching { preferences.storageScope.first() }.getOrDefault("ALL")
+            val scope = runCatching { StorageScope.valueOf(savedScope) }.getOrDefault(StorageScope.ALL)
+            _uiState.update { it.copy(storageScope = scope) }
+            refreshPreview()
+        }
+        refreshVolumes()
+    }
+
+    // ---- storage volumes (internal + SD card) --------------------------------------------
+
+    /** Re-detects mounted volumes — call after a scan and on launch, since an SD card can be
+     *  inserted or removed between app sessions. */
+    private fun refreshVolumes() {
+        viewModelScope.launch {
+            val infos = withContextIo {
+                volumeManager.listVolumes().map {
+                    VolumeInfo(
+                        root = it.root.absolutePath, label = it.label, isRemovable = it.isRemovable,
+                        isPrimary = it.isPrimary, freeBytes = it.freeBytes, totalBytes = it.totalBytes
+                    )
+                }
+            }
+            _uiState.update { it.copy(volumes = infos) }
+        }
+    }
+
+    fun setStorageScope(scope: StorageScope) {
+        _uiState.update { it.copy(storageScope = scope) }
+        refreshPreview()
+        viewModelScope.launch { preferences.setStorageScope(scope.name) }
+    }
+
+    /** Filters scanned metadata down to whichever volume(s) [StorageScope] currently selects. */
+    private fun scopedMetadata(state: UiState): List<FileMetadata> = when (state.storageScope) {
+        StorageScope.ALL -> state.metadata
+        StorageScope.INTERNAL -> state.metadata.filter { !it.isRemovable }
+        StorageScope.SD_CARD -> state.metadata.filter { it.isRemovable }
+    }
+
+    /** Same filtering as [scopedMetadata], but for the physical volume list the executor uses for
+     *  volume-wide commands (delete empty folders, clean Gradle cache, etc). */
+    private fun scopedVolumes(state: UiState): List<com.willykez.files.domain.StorageVolume> {
+        val all = volumeManager.listVolumes()
+        return when (state.storageScope) {
+            StorageScope.ALL -> all
+            StorageScope.INTERNAL -> all.filter { !it.isRemovable }
+            StorageScope.SD_CARD -> all.filter { it.isRemovable }
+        }
     }
 
     // ---- navigation / permissions --------------------------------------------------------
@@ -149,6 +219,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             addLog("Scan complete: ${scanned.size} files, ${formatSize(totalSize)}", LogLevel.SUCCESS)
             addLog("metadata.json → ${metadataManager.metadataPath}", LogLevel.INFO)
+            refreshVolumes()
             refreshPreview()
         }
     }
@@ -186,13 +257,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun refreshPreview() {
         val state = _uiState.value
-        if (state.selectedCommands.isEmpty() || state.metadata.isEmpty()) {
+        val scoped = scopedMetadata(state)
+        if (state.selectedCommands.isEmpty() || scoped.isEmpty()) {
             _uiState.update { it.copy(previewFiles = emptyList()) }
             return
         }
         val seen = LinkedHashSet<FileMetadata>()
         outer@ for (cmd in state.selectedCommands) {
-            for (meta in state.metadata) {
+            for (meta in scoped) {
                 if (CommandMatcher.matches(cmd, meta)) {
                     seen += meta
                     if (seen.size >= 200) break@outer
@@ -215,11 +287,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun runCommands(commands: List<CommandType>) {
-        val meta = _uiState.value.metadata
+        val state = _uiState.value
+        val meta = scopedMetadata(state)
         if (meta.isEmpty()) {
-            addLog("Scan storage first!", LogLevel.WARN)
+            addLog(
+                if (state.metadata.isEmpty()) "Scan storage first!"
+                else "No files match the current storage scope (${state.storageScope}).",
+                LogLevel.WARN
+            )
             return
         }
+        val volumesForScope = scopedVolumes(state)
         _uiState.update { it.copy(activeTab = 2, executing = true, statusText = "⏳ Running ${commands.size} command(s)…") }
         executionJob = viewModelScope.launch {
             var totalOk = 0
@@ -227,7 +305,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var last: ExecutionResult? = null
             for (cmd in commands) {
                 addLog("▶ ${cmd.emoji} ${cmd.displayName}", LogLevel.INFO)
-                val result = executor.execute(cmd, meta)
+                val result = executor.execute(cmd, meta, volumesForScope)
                 last = result
                 for (action in result.actions) {
                     val level = when (action.status) {
@@ -259,6 +337,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Metadata changed on disk — refresh in-memory copy so the next command's preview is accurate.
             val refreshed = metadataManager.loadMetadata()
             _uiState.update { it.copy(metadata = refreshed) }
+            refreshVolumes()
             refreshPreview()
         }
     }

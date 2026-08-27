@@ -133,7 +133,8 @@ fun MainScreen(
                     onClearSelection = viewModel::clearSelection,
                     onExecute = { showConfirmExecute = true },
                     onToggleAutoOrganize = viewModel::setAutoOrganizeEnabled,
-                    onToggleNightlyCleanup = viewModel::setNightlyCleanupEnabled
+                    onToggleNightlyCleanup = viewModel::setNightlyCleanupEnabled,
+                    onScopeChange = viewModel::setStorageScope
                 )
                 1 -> ChatScreen(
                     state = state,
