@@ -35,7 +35,6 @@ object CommandParser {
 
         CommandType.DELETE_DUPLICATES to listOf("delete duplicates", "duplicate files", "remove duplicates", "find duplicates", "marudio"),
         CommandType.DELETE_EMPTY_FOLDERS to listOf("empty folders", "delete empty", "remove empty folders", "folda tupu"),
-        CommandType.DELETE_TEMP_FILES to listOf("cache", "delete cache", "clear cache", "temp files", "temporary files", "tmp files", "futa temp", "faili za muda", "futa kache"),
         CommandType.DELETE_APKS to listOf("delete apk", "apk files", "remove apk", "installers"),
         CommandType.DELETE_UNUSED_APKS to listOf("unused apks", "delete unused", "remove unused apks"),
         CommandType.DELETE_THUMBNAILS to listOf("thumbnails", "delete thumbnails", "clear thumbnails", "picha ndogo"),
@@ -48,6 +47,11 @@ object CommandParser {
         CommandType.CLEAN_GRADLE_CACHE to listOf("gradle cache", "clean gradle", ".gradle"),
         CommandType.REMOVE_NODE_MODULES to listOf("node_modules", "node modules", "npm cache"),
         CommandType.CLEAN_BUILD_OUTPUTS to listOf("build outputs", "build folders", "/build", "/dist"),
+
+        // Kept deliberately generic and placed after every specific *_CACHE rule above, so a
+        // request naming a specific app/tool (Gradle, TikTok, Instagram, WhatsApp) is matched to
+        // that command rather than being swallowed by the bare word "cache" here.
+        CommandType.DELETE_TEMP_FILES to listOf("temp files", "temporary files", "tmp files", "delete cache", "clear cache", "futa temp", "faili za muda", "futa kache"),
 
         CommandType.FIND_LARGEST_FILES to listOf("largest files", "biggest files", "top files by size", "find large", "faili kubwa zaidi"),
         CommandType.FIND_UNUSED_FILES to listOf("unused files", "find unused", "not accessed", "old files analysis"),
