@@ -1,0 +1,9 @@
+# Copy this file to "local.properties" (which is gitignored) and fill in your own values.
+
+# Path to your Android SDK — Android Studio fills this in automatically.
+# sdk.dir=/Users/you/Library/Android/sdk
+
+# Optional: enables the online "smart parsing" mode in the AI Chat tab, where free-text
+# requests are interpreted by the Gemini API instead of the built-in offline keyword matcher.
+# Leave this blank (or omit the line) to run fully offline — every command still works.
+# GEMINI_API_KEY=
