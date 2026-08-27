@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
@@ -53,6 +55,7 @@ import com.willykez.files.ui.theme.Warn
 
 private val tabTitles = listOf("Commands", "AI Chat", "Log")
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     viewModel: MainViewModel = viewModel(),
@@ -190,7 +193,7 @@ private fun PermissionBanner(onRequest: () -> Unit) {
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(androidx.compose.material.icons.Icons.Filled.Info, contentDescription = null, tint = Warn, modifier = Modifier.size(16.dp))
+        Icon(Icons.Filled.Info, contentDescription = null, tint = Warn, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(8.dp))
         Text(
             "Storage access is required to scan and organize files.",
