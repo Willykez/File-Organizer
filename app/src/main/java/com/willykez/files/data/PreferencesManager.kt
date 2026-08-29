@@ -20,6 +20,11 @@ class PreferencesManager(private val context: Context) {
         val NIGHTLY_CLEANUP_ENABLED = booleanPreferencesKey("nightly_cleanup_enabled")
         val STORAGE_SCOPE = stringPreferencesKey("storage_scope")
         val PROTECTED_FOLDERS = stringSetPreferencesKey("protected_folders")
+        val SKIP_HIDDEN_FOLDERS = booleanPreferencesKey("skip_hidden_folders")
+        val AUTO_RESCAN_AFTER_COMMANDS = booleanPreferencesKey("auto_rescan_after_commands")
+        val CONFIRM_BEFORE_RUN = booleanPreferencesKey("confirm_before_run")
+        val AUTO_PROTECT_ENABLED = booleanPreferencesKey("auto_protect_enabled")
+        val AUTOMATION_NOTIFICATIONS = booleanPreferencesKey("automation_notifications")
     }
 
     val selectedCommandNames: Flow<Set<String>> =
@@ -69,4 +74,21 @@ class PreferencesManager(private val context: Context) {
             prefs[Keys.PROTECTED_FOLDERS] = current - path
         }
     }
+
+    // ---- scanning & behavior settings ----------------------------------------------------
+
+    val skipHiddenFolders: Flow<Boolean> = context.dataStore.data.map { it[Keys.SKIP_HIDDEN_FOLDERS] ?: true }
+    suspend fun setSkipHiddenFolders(v: Boolean) { context.dataStore.edit { it[Keys.SKIP_HIDDEN_FOLDERS] = v } }
+
+    val autoRescanAfterCommands: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_RESCAN_AFTER_COMMANDS] ?: false }
+    suspend fun setAutoRescanAfterCommands(v: Boolean) { context.dataStore.edit { it[Keys.AUTO_RESCAN_AFTER_COMMANDS] = v } }
+
+    val confirmBeforeRun: Flow<Boolean> = context.dataStore.data.map { it[Keys.CONFIRM_BEFORE_RUN] ?: true }
+    suspend fun setConfirmBeforeRun(v: Boolean) { context.dataStore.edit { it[Keys.CONFIRM_BEFORE_RUN] = v } }
+
+    val autoProtectEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTO_PROTECT_ENABLED] ?: true }
+    suspend fun setAutoProtectEnabled(v: Boolean) { context.dataStore.edit { it[Keys.AUTO_PROTECT_ENABLED] = v } }
+
+    val automationNotifications: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTOMATION_NOTIFICATIONS] ?: true }
+    suspend fun setAutomationNotifications(v: Boolean) { context.dataStore.edit { it[Keys.AUTOMATION_NOTIFICATIONS] = v } }
 }

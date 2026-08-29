@@ -43,6 +43,7 @@ import com.willykez.files.ui.screens.ChatScreen
 import com.willykez.files.ui.screens.CommandsBottomBar
 import com.willykez.files.ui.screens.CommandsScreen
 import com.willykez.files.ui.screens.LogScreen
+import com.willykez.files.ui.screens.SettingsScreen
 import com.willykez.files.ui.theme.Aurora2
 import com.willykez.files.ui.theme.BgSpace
 import com.willykez.files.ui.theme.BorderGlass
@@ -54,13 +55,14 @@ import com.willykez.files.ui.theme.TextMain
 import com.willykez.files.ui.theme.TextMid
 import com.willykez.files.ui.theme.Warn
 
-private val tabTitles = listOf("Commands", "AI Chat", "Log")
+private val tabTitles = listOf("Commands", "AI Chat", "Log", "Settings")
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     viewModel: MainViewModel = viewModel(),
-    onRequestStoragePermission: () -> Unit
+    onRequestStoragePermission: () -> Unit,
+    onRequestNotificationPermission: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -118,7 +120,9 @@ fun MainScreen(
                     state = state,
                     onSelectAll = viewModel::selectAll,
                     onClearSelection = viewModel::clearSelection,
-                    onExecute = { showConfirmExecute = true }
+                    onExecute = {
+                        if (state.confirmBeforeRun) showConfirmExecute = true else viewModel.executeSelected()
+                    }
                 )
             }
         }
@@ -132,9 +136,9 @@ fun MainScreen(
                     onToggleCommand = viewModel::toggleCommand,
                     onSelectAll = viewModel::selectAll,
                     onClearSelection = viewModel::clearSelection,
-                    onExecute = { showConfirmExecute = true },
-                    onToggleAutoOrganize = viewModel::setAutoOrganizeEnabled,
-                    onToggleNightlyCleanup = viewModel::setNightlyCleanupEnabled,
+                    onExecute = {
+                        if (state.confirmBeforeRun) showConfirmExecute = true else viewModel.executeSelected()
+                    },
                     onScopeChange = viewModel::setStorageScope,
                     onOpenFolderPicker = viewModel::openFolderPicker,
                     onClearFolderScope = viewModel::clearFolderScope,
@@ -154,6 +158,29 @@ fun MainScreen(
                     onClearLog = viewModel::clearLog,
                     onUndo = viewModel::undoLast,
                     onCancel = viewModel::cancelExecution
+                )
+                3 -> SettingsScreen(
+                    state = state,
+                    onSaveApiKey = viewModel::saveApiKey,
+                    onClearApiKey = viewModel::clearApiKey,
+                    onTestApiKey = viewModel::testApiKey,
+                    onToggleAutoOrganize = { enabled ->
+                        if (enabled) onRequestNotificationPermission()
+                        viewModel.setAutoOrganizeEnabled(enabled)
+                    },
+                    onToggleNightlyCleanup = { enabled ->
+                        if (enabled) onRequestNotificationPermission()
+                        viewModel.setNightlyCleanupEnabled(enabled)
+                    },
+                    onSetSkipHiddenFolders = viewModel::setSkipHiddenFolders,
+                    onSetAutoRescanAfterCommands = viewModel::setAutoRescanAfterCommands,
+                    onSetConfirmBeforeRun = viewModel::setConfirmBeforeRun,
+                    onSetAutoProtectEnabled = viewModel::setAutoProtectEnabled,
+                    onSetAutomationNotifications = { enabled ->
+                        if (enabled) onRequestNotificationPermission()
+                        viewModel.setAutomationNotificationsEnabled(enabled)
+                    },
+                    onClearScanData = viewModel::clearScanData
                 )
             }
         }

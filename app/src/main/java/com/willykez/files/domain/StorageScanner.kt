@@ -25,7 +25,7 @@ class StorageScanner(private val context: Context) {
     private val volumeManager = StorageVolumeManager(context)
     private val excludedFolders = setOf("android", "lost.dir")
 
-    suspend fun scanAll(onProgress: suspend (ScanProgress) -> Unit = {}): List<FileMetadata> =
+    suspend fun scanAll(skipHidden: Boolean = true, onProgress: suspend (ScanProgress) -> Unit = {}): List<FileMetadata> =
         withContext(Dispatchers.IO) {
             val result = mutableListOf<FileMetadata>()
             val volumes = volumeManager.listVolumes()
@@ -44,7 +44,7 @@ class StorageScanner(private val context: Context) {
                     for (child in children) {
                         if (child.isDirectory) {
                             val n = child.name.lowercase()
-                            if (n in excludedFolders || n.startsWith(".")) continue
+                            if (n in excludedFolders || (skipHidden && n.startsWith("."))) continue
                             queue.add(child)
                         } else {
                             result += child.toMetadata(volume)

@@ -9,9 +9,13 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.Constraints
 import com.willykez.files.data.MetadataManager
+import com.willykez.files.data.PreferencesManager
 import com.willykez.files.data.model.CommandType
+import com.willykez.files.data.model.ExecutionResult
 import com.willykez.files.domain.CommandExecutor
+import com.willykez.files.domain.ProtectionRules
 import com.willykez.files.domain.StorageScanner
+import kotlinx.coroutines.flow.first
 import java.util.concurrent.TimeUnit
 
 /**
@@ -32,26 +36,59 @@ class AutomationWorker(appContext: Context, params: WorkerParameters) : Coroutin
             val scanner = StorageScanner(applicationContext)
             val metadataManager = MetadataManager()
             val executor = CommandExecutor(applicationContext)
+            val preferences = PreferencesManager(applicationContext)
 
             // Re-scan so automation always acts on a fresh index rather than a stale one.
-            val fresh = scanner.scanAll()
+            val skipHidden = preferences.skipHiddenFolders.first()
+            val fresh = scanner.scanAll(skipHidden = skipHidden)
             metadataManager.saveMetadata(fresh)
 
+            // Automated runs respect protected folders exactly like manual ones — a scheduled
+            // job is the last place a source-code or firmware folder should get shredded, since
+            // there's no one watching to catch it happening.
+            val autoRoots = if (preferences.autoProtectEnabled.first()) ProtectionRules.detectProtectedRoots(fresh) else emptySet()
+            val userRoots = preferences.protectedFolders.first()
+            val protectedRoots = autoRoots + userRoots
+            val scoped = if (protectedRoots.isEmpty()) fresh
+            else fresh.filterNot { ProtectionRules.isProtected(it.absolutePath, protectedRoots) }
+
+            val results = mutableListOf<ExecutionResult>()
             when (command) {
                 CommandType.AUTO_ORGANIZE_DAILY -> {
-                    executor.execute(CommandType.MOVE_DOWNLOADS, fresh)
-                    executor.execute(CommandType.MOVE_SCREENSHOTS, fresh)
+                    results += executor.execute(CommandType.MOVE_DOWNLOADS, scoped)
+                    results += executor.execute(CommandType.MOVE_SCREENSHOTS, scoped)
                 }
                 CommandType.NIGHTLY_CLEANUP -> {
-                    executor.execute(CommandType.DELETE_TEMP_FILES, fresh)
-                    executor.execute(CommandType.DELETE_EMPTY_FOLDERS, fresh)
+                    results += executor.execute(CommandType.DELETE_TEMP_FILES, scoped)
+                    results += executor.execute(CommandType.DELETE_EMPTY_FOLDERS, fresh, protectedRoots = protectedRoots)
                 }
                 else -> return Result.failure()
+            }
+
+            if (preferences.automationNotifications.first()) {
+                notifySummary(command, results)
             }
             Result.success()
         } catch (e: Exception) {
             Result.retry()
         }
+    }
+
+    private fun notifySummary(command: CommandType, results: List<ExecutionResult>) {
+        val succeeded = results.sumOf { it.succeeded }
+        val failed = results.sumOf { it.failed }
+        val title = when (command) {
+            CommandType.AUTO_ORGANIZE_DAILY -> "Daily Auto-Organize finished"
+            CommandType.NIGHTLY_CLEANUP -> "Nightly Cleanup finished"
+            else -> "Automation finished"
+        }
+        val text = if (succeeded == 0 && failed == 0) "Nothing to do — everything was already tidy."
+        else buildString {
+            append("$succeeded item(s) handled")
+            if (failed > 0) append(", $failed failed")
+            append(".")
+        }
+        NotificationHelper.showSummary(applicationContext, title, text)
     }
 
     companion object {

@@ -38,6 +38,12 @@ class MainActivity : ComponentActivity() {
                     viewModel.setStoragePermission(results.values.all { it })
                 }
 
+                // No result handling needed beyond the system prompt itself — NotificationHelper
+                // already no-ops safely if the permission ends up denied.
+                val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { /* no-op */ }
+
                 // Re-check permission state whenever the user returns to the app (e.g. after
                 // granting "All files access" in system Settings).
                 DisposableEffectPermissionRefresh(lifecycleOwner) {
@@ -55,6 +61,11 @@ class MainActivity : ComponentActivity() {
                             manageStorageLauncher.launch(PermissionsHelper.manageStorageIntent(this))
                         } else {
                             legacyPermissionLauncher.launch(PermissionsHelper.legacyStoragePermissions)
+                        }
+                    },
+                    onRequestNotificationPermission = {
+                        if (PermissionsHelper.needsNotificationPermission(this)) {
+                            notificationPermissionLauncher.launch(PermissionsHelper.notificationPermission)
                         }
                     }
                 )

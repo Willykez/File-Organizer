@@ -27,6 +27,11 @@ same app. See [MIGRATION.md](MIGRATION.md) for exactly what changed and why.
   matched files, source, destination — shown for review before anything changes, the same way a
   code-review tool shows a diff before you commit it. Works fully offline via keyword heuristics;
   an optional Gemini key makes the parsing more flexible
+- **Settings tab** — add or remove your own Gemini API key at runtime (encrypted on-device, no
+  rebuild needed), plus toggles for automation notifications, scan behavior, confirmation
+  dialogs, auto-protection, and a one-tap way to clear the on-device scan index
+- **Automation notifications** — Daily Auto-Organize and Nightly Cleanup now post a summary
+  notification when they finish running in the background
 - **AI Chat tab** — describe what you want in plain English or Swahili ("panga picha za skrini",
   "clean up my whatsapp junk") and it detects the matching command; works fully offline, with an
   optional Gemini-powered mode for more natural replies
@@ -50,14 +55,23 @@ same app. See [MIGRATION.md](MIGRATION.md) for exactly what changed and why.
    ```
    ./gradlew assembleDebug
    ```
-2. (Optional) To enable the online AI Chat mode, copy `local.properties.example` to
-   `local.properties` and add your own key:
-   ```
-   GEMINI_API_KEY=your-key-here
-   ```
-   `local.properties` is gitignored — **never commit a real key**. Without one, the app runs
-   entirely offline and every command still works; only chat replies fall back to a simpler,
-   locally-computed response.
+2. (Optional) Enable the online AI Chat mode one of two ways:
+   - **In-app (recommended)** — open the **Settings** tab → *AI Integration* → paste your key and
+     tap **Save Key**. It's stored encrypted on-device (`EncryptedSharedPreferences`, Android
+     Keystore-backed) and takes effect immediately, no rebuild required. Tap **Test Connection**
+     to verify it works, or **Remove Key** to go back to offline-only.
+   - **At build time** — copy `local.properties.example` to `local.properties` and add:
+     ```
+     GEMINI_API_KEY=your-key-here
+     ```
+     `local.properties` is gitignored — **never commit a real key**. A key entered in-app always
+     takes priority over this one while it's set.
+
+   Get a free key from [Google AI Studio](https://aistudio.google.com/apikey) — there's also a
+   shortcut button for this right in the Settings screen.
+
+   Without any key, the app runs entirely offline and every command still works; only chat
+   replies and custom-command parsing fall back to simpler, locally-computed logic.
 
 ## Permissions
 
@@ -88,13 +102,15 @@ decoded keystore file immediately afterward regardless of outcome.
 ## Architecture
 
 ```
-data/           Models (FileMetadata, ExecutionResult, CommandType), FileTypeResolver,
-                MetadataManager (JSON persistence), PreferencesManager (DataStore)
-domain/         StorageScanner, CommandMatcher, CommandExecutor, CommandParser, GeminiClient
-automation/     WorkManager worker + scheduler for background automation
-permissions/    Storage permission helpers (scoped storage + legacy)
-ui/             MainViewModel (StateFlow), MainScreen, screens/ (Commands, Chat, Log),
-                components/ (glass-morphism UI), theme/
+data/           Models (FileMetadata, ExecutionResult, CommandType, CustomAction),
+                FileTypeResolver, MetadataManager (JSON persistence),
+                PreferencesManager (DataStore), ApiKeyManager (encrypted key storage)
+domain/         StorageScanner, StorageVolumeManager, CommandMatcher, CommandExecutor,
+                CommandParser, CustomCommandParser, GeminiClient, ProtectionRules
+automation/     WorkManager worker + scheduler for background automation, NotificationHelper
+permissions/    Storage + notification permission helpers (scoped storage + legacy)
+ui/             MainViewModel (StateFlow), MainScreen, screens/ (Commands, Chat, Log, Settings),
+                components/ (glass-morphism UI, folder picker), theme/
 ```
 
 `CommandMatcher` is the single source of truth for "does this file match this command" — used by

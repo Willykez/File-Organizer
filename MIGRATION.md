@@ -67,6 +67,18 @@ document lists what changed in the Kotlin/Compose rewrite and why.
   Movies folder") into a concrete plan and show it for review — matched files, source, destination
   — before anything on disk changes, mirroring a code-review "diff before commit" flow rather than
   acting on a natural-language guess.
+- **Settings screen with a runtime API key.** The Gemini key no longer has to be baked in at build
+  time — Settings → AI Integration lets you paste, test, and remove your own key on-device
+  (`EncryptedSharedPreferences`), taking priority over any `local.properties`/CI-secret key while
+  set. Settings also exposes real behavioral toggles: skip-hidden-folders during scan, auto
+  re-scan after running commands, confirm-before-run, auto-protect on/off, automation
+  notifications, and one-tap scan-data clearing.
+- **Automation now respects protected folders and notifies on completion.** The scheduled
+  Daily Auto-Organize / Nightly Cleanup jobs previously ran with no protection filtering at all —
+  a scheduled job is the worst place for a source/firmware folder to get shredded unattended, so
+  it now applies the same `ProtectionRules` as a manual run, and posts a summary notification when
+  it finishes (closing a gap where `POST_NOTIFICATIONS` was declared in the manifest but never
+  actually used).
 - **Persisted preferences (DataStore).** Selected commands and automation toggles now survive an
   app restart; previously nothing was persisted beyond the file metadata cache itself.
 - **Cancellable, coroutine-based execution.** Long-running scans/commands can be cancelled from

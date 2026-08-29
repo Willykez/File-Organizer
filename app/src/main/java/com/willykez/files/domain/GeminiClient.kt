@@ -13,20 +13,20 @@ import java.net.URL
 /**
  * Thin client for Gemini's `generateContent` endpoint, used only to make the AI Chat tab's
  * replies more conversational. Entirely optional: [CommandParser] and [CommandExecutor] work
- * with zero network access, so a missing/blank [apiKey] just means chat falls back to canned,
+ * with zero network access, so a missing/blank key just means chat falls back to canned,
  * locally-computed responses (see MainViewModel.fallbackChatReply) instead of failing the feature.
  *
  * Security note: the previous version of this app had a live API key hardcoded directly in the
- * source (committed to git history). This client takes the key as a constructor parameter — it
- * is wired up from `BuildConfig.GEMINI_API_KEY`, itself sourced from a gitignored
- * `local.properties` entry or a CI secret, never from source code.
+ * source (committed to git history). This client never hardcodes one — [apiKeyProvider] is called
+ * fresh on every request, since the effective key can change at runtime (the user can enter their
+ * own from Settings, which takes priority over any build-time `local.properties`/CI-secret key).
  */
-class GeminiClient(private val apiKey: String) {
+class GeminiClient(private val apiKeyProvider: () -> String) {
 
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-    val isConfigured: Boolean get() = apiKey.isNotBlank()
+    val isConfigured: Boolean get() = apiKeyProvider().isNotBlank()
 
     @Serializable
     private data class Part(val text: String)
@@ -44,7 +44,8 @@ class GeminiClient(private val apiKey: String) {
 
     /** Returns the model's reply, or null on any failure (timeout, non-200, missing key, etc). */
     suspend fun complete(prompt: String): String? = withContext(Dispatchers.IO) {
-        if (!isConfigured) return@withContext null
+        val apiKey = apiKeyProvider()
+        if (apiKey.isBlank()) return@withContext null
         runCatching {
             val url = URL(endpoint)
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -68,5 +69,11 @@ class GeminiClient(private val apiKey: String) {
             val parsed = json.decodeFromString(Response.serializer(), raw)
             parsed.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
         }.getOrNull()
+    }
+
+    /** Lightweight connectivity check for the Settings screen's "Test Connection" button. */
+    suspend fun testConnection(): Result<Unit> {
+        val reply = complete("Reply with exactly: OK")
+        return if (reply != null) Result.success(Unit) else Result.failure(IllegalStateException("No response — check the key and your connection"))
     }
 }

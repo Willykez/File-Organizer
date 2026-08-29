@@ -66,8 +66,6 @@ fun CommandsScreen(
     onSelectAll: () -> Unit,
     onClearSelection: () -> Unit,
     onExecute: () -> Unit,
-    onToggleAutoOrganize: (Boolean) -> Unit = {},
-    onToggleNightlyCleanup: (Boolean) -> Unit = {},
     onScopeChange: (StorageScope) -> Unit = {},
     onOpenFolderPicker: () -> Unit = {},
     onClearFolderScope: () -> Unit = {},
@@ -109,14 +107,6 @@ fun CommandsScreen(
                     onClearFolderScope = onClearFolderScope,
                     onProtectCurrentFolder = onProtectCurrentFolder,
                     onUnprotectFolder = onUnprotectFolder
-                )
-            }
-            item {
-                AutomationCard(
-                    autoOrganizeEnabled = state.autoOrganizeEnabled,
-                    nightlyCleanupEnabled = state.nightlyCleanupEnabled,
-                    onToggleAutoOrganize = onToggleAutoOrganize,
-                    onToggleNightlyCleanup = onToggleNightlyCleanup
                 )
             }
             items(categories) { category ->
@@ -272,40 +262,6 @@ private fun ScopeChip(label: String, selected: Boolean, onClick: () -> Unit) {
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Text(label, color = if (selected) Primary else TextMid, fontSize = 10.5.sp, fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-private fun AutomationCard(
-    autoOrganizeEnabled: Boolean,
-    nightlyCleanupEnabled: Boolean,
-    onToggleAutoOrganize: (Boolean) -> Unit,
-    onToggleNightlyCleanup: (Boolean) -> Unit
-) {
-    GlassCard(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text("🤖 Automation", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text("Runs automatically in the background — no need to select these manually.", color = TextMid, fontSize = 11.sp)
-            Spacer(Modifier.height(10.dp))
-            AutomationRow("Daily Auto-Organize", "Moves Downloads & Screenshots every 24h", autoOrganizeEnabled, onToggleAutoOrganize)
-            Spacer(Modifier.height(8.dp))
-            AutomationRow("Nightly Cleanup", "Deletes temp files & empty folders every 24h", nightlyCleanupEnabled, onToggleNightlyCleanup)
-        }
-    }
-}
-
-@Composable
-private fun AutomationRow(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, color = TextMain, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
-            Text(subtitle, color = TextDim, fontSize = 10.sp)
-        }
-        androidx.compose.material3.Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = androidx.compose.material3.SwitchDefaults.colors(checkedThumbColor = Primary, checkedTrackColor = Primary.copy(alpha = 0.4f))
-        )
     }
 }
 

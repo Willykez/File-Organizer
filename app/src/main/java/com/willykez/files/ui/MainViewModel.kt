@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.willykez.files.BuildConfig
+import com.willykez.files.data.ApiKeyManager
 import com.willykez.files.data.MetadataManager
 import com.willykez.files.data.PreferencesManager
 import com.willykez.files.data.model.ActionStatus
@@ -120,9 +121,21 @@ data class UiState(
     // delete commands skip these unless the user explicitly scoped a command into one via the
     // folder picker.
     val autoProtectedRoots: Set<String> = emptySet(),
-    val userProtectedFolders: Set<String> = emptySet()
+    val userProtectedFolders: Set<String> = emptySet(),
+
+    // ---- Settings ----
+    val apiKeyConfigured: Boolean = false,
+    val apiKeyMaskedPreview: String? = null,
+    val apiKeyTesting: Boolean = false,
+    val apiKeyTestMessage: String? = null,
+    val skipHiddenFolders: Boolean = true,
+    val autoRescanAfterCommands: Boolean = false,
+    val confirmBeforeRun: Boolean = true,
+    val autoProtectEnabled: Boolean = true,
+    val automationNotificationsEnabled: Boolean = true
 ) {
-    val effectiveProtectedRoots: Set<String> get() = autoProtectedRoots + userProtectedFolders
+    val effectiveProtectedRoots: Set<String>
+        get() = (if (autoProtectEnabled) autoProtectedRoots else emptySet()) + userProtectedFolders
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -132,7 +145,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val executor = CommandExecutor(application)
     private val preferences = PreferencesManager(application)
     private val volumeManager = StorageVolumeManager(application)
-    private val gemini = GeminiClient(BuildConfig.GEMINI_API_KEY)
+    private val apiKeyManager = ApiKeyManager(application)
+    private val gemini = GeminiClient { apiKeyManager.getApiKey() ?: BuildConfig.GEMINI_API_KEY }
     private val chatContextHistory = mutableListOf<String>()
 
     private var executionJob: Job? = null
@@ -181,6 +195,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             preferences.protectedFolders.collectLatest { folders -> _uiState.update { it.copy(userProtectedFolders = folders) } }
+        }
+        // Warm up EncryptedSharedPreferences off the main thread, then reflect its state reactively.
+        viewModelScope.launch(Dispatchers.IO) {
+            apiKeyManager.refreshHasKey()
+        }
+        viewModelScope.launch {
+            apiKeyManager.hasKey.collectLatest { has ->
+                val masked = if (has) withContextIo { apiKeyManager.maskedPreview() } else null
+                _uiState.update { it.copy(apiKeyConfigured = has, apiKeyMaskedPreview = masked) }
+            }
+        }
+        viewModelScope.launch {
+            preferences.skipHiddenFolders.collectLatest { v -> _uiState.update { it.copy(skipHiddenFolders = v) } }
+        }
+        viewModelScope.launch {
+            preferences.autoRescanAfterCommands.collectLatest { v -> _uiState.update { it.copy(autoRescanAfterCommands = v) } }
+        }
+        viewModelScope.launch {
+            preferences.confirmBeforeRun.collectLatest { v -> _uiState.update { it.copy(confirmBeforeRun = v) } }
+        }
+        viewModelScope.launch {
+            preferences.autoProtectEnabled.collectLatest { v -> _uiState.update { it.copy(autoProtectEnabled = v) } }
+        }
+        viewModelScope.launch {
+            preferences.automationNotifications.collectLatest { v -> _uiState.update { it.copy(automationNotificationsEnabled = v) } }
         }
         refreshVolumes()
     }
@@ -326,7 +365,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         addLog("⏳ Scan started…", LogLevel.INFO)
         viewModelScope.launch {
-            val scanned = scanner.scanAll { _: ScanProgress -> /* could surface live count if desired */ }
+            val skipHidden = _uiState.value.skipHiddenFolders
+            val scanned = scanner.scanAll(skipHidden = skipHidden) { _: ScanProgress -> /* could surface live count if desired */ }
             metadataManager.saveMetadata(scanned)
             val totalSize = scanned.sumOf(FileMetadata::sizeBytes)
             val autoRoots = ProtectionRules.detectProtectedRoots(scanned)
@@ -475,11 +515,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     canUndo = last?.actions?.any { a -> a.undo != null } == true
                 )
             }
-            // Metadata changed on disk — refresh in-memory copy so the next command's preview is accurate.
-            val refreshed = metadataManager.loadMetadata()
-            _uiState.update { it.copy(metadata = refreshed) }
-            refreshVolumes()
-            refreshPreview()
+            if (_uiState.value.autoRescanAfterCommands) {
+                addLog("🔄 Auto re-scan enabled — refreshing full index…", LogLevel.INFO)
+                startScan()
+            } else {
+                // Metadata changed on disk — refresh in-memory copy so the next command's preview is
+                // accurate. This reloads the last full scan's snapshot rather than re-scanning (cheap,
+                // but won't reflect this run's moves/deletes until the next scan or an opt-in rescan
+                // above — see the "Auto re-scan after commands" setting).
+                val refreshed = metadataManager.loadMetadata()
+                _uiState.update { it.copy(metadata = refreshed) }
+                refreshVolumes()
+                refreshPreview()
+            }
         }
     }
 
@@ -528,6 +576,79 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 com.willykez.files.automation.AutomationScheduler.schedule(getApplication(), CommandType.NIGHTLY_CLEANUP)
             } else {
                 com.willykez.files.automation.AutomationScheduler.cancel(getApplication(), CommandType.NIGHTLY_CLEANUP)
+            }
+        }
+    }
+
+    // ---- settings --------------------------------------------------------------------
+
+    /** Saves a user-entered Gemini API key, encrypted on-device. Takes priority over any
+     *  build-time key from `local.properties`/CI secret while set. */
+    fun saveApiKey(key: String) {
+        if (key.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            apiKeyManager.setApiKey(key)
+            _uiState.update { it.copy(apiKeyTestMessage = null) }
+        }
+    }
+
+    fun clearApiKey() {
+        viewModelScope.launch(Dispatchers.IO) {
+            apiKeyManager.clearApiKey()
+            _uiState.update { it.copy(apiKeyTestMessage = null) }
+        }
+    }
+
+    fun testApiKey() {
+        _uiState.update { it.copy(apiKeyTesting = true, apiKeyTestMessage = null) }
+        viewModelScope.launch {
+            val result = gemini.testConnection()
+            _uiState.update {
+                it.copy(
+                    apiKeyTesting = false,
+                    apiKeyTestMessage = result.fold(
+                        onSuccess = { "✓ Connected — replies will use this key." },
+                        onFailure = { e -> "✗ ${e.message ?: "Connection failed"}" }
+                    )
+                )
+            }
+        }
+    }
+
+    fun setSkipHiddenFolders(enabled: Boolean) {
+        viewModelScope.launch { preferences.setSkipHiddenFolders(enabled) }
+    }
+
+    fun setAutoRescanAfterCommands(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoRescanAfterCommands(enabled) }
+    }
+
+    fun setConfirmBeforeRun(enabled: Boolean) {
+        viewModelScope.launch { preferences.setConfirmBeforeRun(enabled) }
+    }
+
+    fun setAutoProtectEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutoProtectEnabled(enabled) }
+    }
+
+    fun setAutomationNotificationsEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferences.setAutomationNotifications(enabled) }
+    }
+
+    /** Wipes the scan index (metadata.json + in-memory state) without touching any actual files
+     *  on disk — a clean slate for re-scanning, e.g. after storage has changed a lot. */
+    fun clearScanData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { metadataManager.getMetadataFile().delete() }
+            withContext(Dispatchers.Main) {
+                _uiState.update {
+                    it.copy(
+                        metadata = emptyList(), metadataExists = false, metadataPath = null,
+                        fileStats = null, scanLabel = "Ready to scan", previewFiles = emptyList(),
+                        autoProtectedRoots = emptySet(), selectedCommands = emptySet()
+                    )
+                }
+                addLog("Scan data cleared.", LogLevel.INFO)
             }
         }
     }
@@ -620,9 +741,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     canUndo = result.actions.any { a -> a.undo != null }
                 )
             }
-            val refreshed = metadataManager.loadMetadata()
-            _uiState.update { it.copy(metadata = refreshed) }
-            refreshPreview()
+            if (_uiState.value.autoRescanAfterCommands) {
+                startScan()
+            } else {
+                val refreshed = metadataManager.loadMetadata()
+                _uiState.update { it.copy(metadata = refreshed) }
+                refreshPreview()
+            }
         }
     }
 
