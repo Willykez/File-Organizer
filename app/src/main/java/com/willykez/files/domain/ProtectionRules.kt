@@ -47,12 +47,24 @@ object ProtectionRules {
         // several firmware-looking names. Metadata only has files, so infer subfolder names from
         // any file's parentPath tail relative to a candidate ancestor two levels up.
         val parentDirs = metadata.map { it.parentPath }.toHashSet()
-        val byGrandparent = parentDirs.groupBy { path -> path.substringBeforeLast('/', missingDelimiterValue = "") }
-        for ((candidateRoot, children) in byGrandparent) {
-            if (candidateRoot.isBlank()) continue
-            val childNames = children.map { it.substringAfterLast('/') }.toSet()
-            val hits = FIRMWARE_SIBLING_MARKERS.count { it in childNames }
-            if (hits >= FIRMWARE_MARKER_THRESHOLD) roots += candidateRoot
+
+        // New logic: look for marker folder names anywhere in a file's parent path. If a parent
+        // path contains "/<marker>" then the directory before that marker is a candidate root.
+        // Count how many distinct markers appear for each candidate root and mark it protected
+        // when the count reaches the threshold.
+        val firmwareHitsByRoot = mutableMapOf<String, MutableSet<String>>()
+        for (parent in parentDirs) {
+            for (marker in FIRMWARE_SIBLING_MARKERS) {
+                val token = "/$marker"
+                if (parent.contains(token)) {
+                    val candidateRoot = parent.substringBefore(token)
+                    if (candidateRoot.isBlank()) continue
+                    firmwareHitsByRoot.getOrPut(candidateRoot) { mutableSetOf() }.add(marker)
+                }
+            }
+        }
+        for ((candidateRoot, markersFound) in firmwareHitsByRoot) {
+            if (markersFound.size >= FIRMWARE_MARKER_THRESHOLD) roots += candidateRoot
         }
 
         return roots
