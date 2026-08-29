@@ -237,5 +237,20 @@ enum class CommandType(
 
         /** Commands safe (and meaningful) to run unattended on a schedule via WorkManager. */
         val automatable: Set<CommandType> = setOf(AUTO_ORGANIZE_DAILY, NIGHTLY_CLEANUP)
+
+        /**
+         * Commands that deliberately reach inside a protected (project/firmware) folder rather
+         * than being blocked by [com.willykez.files.domain.ProtectionRules] — developer cleanup
+         * tools that target known-regenerable subfolders (node_modules, build output, Gradle
+         * cache), the command that moves whole project folders intact, and read-only analysis.
+         * Everything else — organize/move/delete commands that act on individual files by type,
+         * date, or size — respects protected folders by default.
+         */
+        val protectionExempt: Set<CommandType> = setOf(
+            UNKNOWN, CLEAN_TIKTOK_CACHE, CLEAN_INSTAGRAM_CACHE, CLEAN_GRADLE_CACHE,
+            REMOVE_NODE_MODULES, CLEAN_BUILD_OUTPUTS, ORGANIZE_CODE_PROJECTS,
+            FIND_LARGEST_FILES, FIND_UNUSED_FILES, ANALYZE_STORAGE_USAGE,
+            AUTO_ORGANIZE_DAILY, NIGHTLY_CLEANUP
+        )
     }
 }

@@ -9,18 +9,24 @@ import com.willykez.files.data.PreferencesManager
 import com.willykez.files.data.model.ActionStatus
 import com.willykez.files.data.model.Category
 import com.willykez.files.data.model.CommandType
+import com.willykez.files.data.model.CustomAction
 import com.willykez.files.data.model.ExecutionResult
 import com.willykez.files.data.model.FileMetadata
 import com.willykez.files.domain.CommandExecutor
 import com.willykez.files.domain.CommandMatcher
 import com.willykez.files.domain.CommandParser
+import com.willykez.files.domain.CustomCommandParser
 import com.willykez.files.domain.GeminiClient
+import com.willykez.files.domain.ProtectionRules
 import com.willykez.files.domain.ScanProgress
 import com.willykez.files.domain.StorageScanner
+import com.willykez.files.domain.StorageVolume
 import com.willykez.files.domain.StorageVolumeManager
 import com.willykez.files.domain.formatSize
-import kotlinx.coroutines.Job
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,9 +43,21 @@ private suspend fun <T> withContextIo(block: () -> T): T = withContext(Dispatche
 
 enum class LogLevel { SUCCESS, WARN, ERROR, INFO }
 data class LogLine(val text: String, val level: LogLevel)
-data class ChatMessage(val role: String, val text: String, val detectedCommand: CommandType? = null)
 
-/** Which storage volume(s) the Commands tab and executor should act on. */
+enum class CustomActionResolution { CONFIRMED, CANCELLED }
+data class PendingCustomAction(val action: CustomAction, val matchedFiles: List<FileMetadata>)
+
+data class ChatMessage(
+    val id: String = UUID.randomUUID().toString(),
+    val role: String,
+    val text: String,
+    val detectedCommand: CommandType? = null,
+    val pendingCustomAction: PendingCustomAction? = null,
+    val resolution: CustomActionResolution? = null
+)
+
+/** Which storage volume(s) the Commands tab and executor should act on. Overridden per-run
+ *  whenever a specific folder is picked via [UiState.selectedFolder]. */
 enum class StorageScope { ALL, INTERNAL, SD_CARD }
 
 data class VolumeInfo(
@@ -68,7 +86,12 @@ data class UiState(
     val previewFiles: List<FileMetadata> = emptyList(),
 
     val chatMessages: List<ChatMessage> = listOf(
-        ChatMessage("assistant", "Hello! I'm your AI file organizer. Scan storage first, then ask me anything — I can help organize, clean, find large files, and more.")
+        ChatMessage(
+            role = "assistant",
+            text = "Hello! I'm your AI file organizer. Scan storage first, then ask me anything — " +
+                "pick a built-in command, or describe something specific like \"move all .mkv files " +
+                "from Downloads to the SD card Movies folder\" and I'll build and preview it for you."
+        )
     ),
     val chatSending: Boolean = false,
 
@@ -83,8 +106,24 @@ data class UiState(
     val nightlyCleanupEnabled: Boolean = false,
 
     val storageScope: StorageScope = StorageScope.ALL,
-    val volumes: List<VolumeInfo> = emptyList()
-)
+    val volumes: List<VolumeInfo> = emptyList(),
+
+    // Folder-scoped actions: when set, this overrides storageScope for both preview and execution.
+    val selectedFolder: String? = null,
+    val selectedFolderLabel: String? = null,
+    val folderPickerOpen: Boolean = false,
+    val folderPickerCurrentPath: String? = null,
+    val folderPickerEntries: List<String> = emptyList(),
+    val folderPickerLoading: Boolean = false,
+
+    // Protected folders: auto-detected (source/firmware roots) + user-marked. Bulk organize/move/
+    // delete commands skip these unless the user explicitly scoped a command into one via the
+    // folder picker.
+    val autoProtectedRoots: Set<String> = emptySet(),
+    val userProtectedFolders: Set<String> = emptySet()
+) {
+    val effectiveProtectedRoots: Set<String> get() = autoProtectedRoots + userProtectedFolders
+}
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -112,7 +151,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         metadataExists = true,
                         metadataPath = metadataManager.metadataPath,
                         fileStats = if (meta.isNotEmpty()) "${meta.size} files  ·  ${formatSize(meta.sumOf(FileMetadata::sizeBytes))}" else null,
-                        scanLabel = if (meta.isNotEmpty()) "Scan complete  ·  ${meta.size} files" else it.scanLabel
+                        scanLabel = if (meta.isNotEmpty()) "Scan complete  ·  ${meta.size} files" else it.scanLabel,
+                        autoProtectedRoots = if (meta.isNotEmpty()) ProtectionRules.detectProtectedRoots(meta) else emptySet()
                     )
                 }
             }
@@ -138,6 +178,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val scope = runCatching { StorageScope.valueOf(savedScope) }.getOrDefault(StorageScope.ALL)
             _uiState.update { it.copy(storageScope = scope) }
             refreshPreview()
+        }
+        viewModelScope.launch {
+            preferences.protectedFolders.collectLatest { folders -> _uiState.update { it.copy(userProtectedFolders = folders) } }
         }
         refreshVolumes()
     }
@@ -166,22 +209,102 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { preferences.setStorageScope(scope.name) }
     }
 
-    /** Filters scanned metadata down to whichever volume(s) [StorageScope] currently selects. */
-    private fun scopedMetadata(state: UiState): List<FileMetadata> = when (state.storageScope) {
-        StorageScope.ALL -> state.metadata
-        StorageScope.INTERNAL -> state.metadata.filter { !it.isRemovable }
-        StorageScope.SD_CARD -> state.metadata.filter { it.isRemovable }
+    /** Filters scanned metadata to the current scope — an explicitly picked folder always wins
+     *  over the coarser internal/SD-card toggle. */
+    private fun scopedMetadata(state: UiState): List<FileMetadata> {
+        val folder = state.selectedFolder
+        if (folder != null) {
+            return state.metadata.filter { it.absolutePath == folder || it.absolutePath.startsWith("$folder/") }
+        }
+        return when (state.storageScope) {
+            StorageScope.ALL -> state.metadata
+            StorageScope.INTERNAL -> state.metadata.filter { !it.isRemovable }
+            StorageScope.SD_CARD -> state.metadata.filter { it.isRemovable }
+        }
     }
 
-    /** Same filtering as [scopedMetadata], but for the physical volume list the executor uses for
-     *  volume-wide commands (delete empty folders, clean Gradle cache, etc). */
-    private fun scopedVolumes(state: UiState): List<com.willykez.files.domain.StorageVolume> {
+    /** Same precedence as [scopedMetadata], but for the physical volume list the executor uses
+     *  for volume-wide commands (delete empty folders, clean Gradle cache, etc). A folder scope
+     *  becomes a single pseudo-volume rooted at that folder. */
+    private fun scopedVolumes(state: UiState): List<StorageVolume> {
+        val folder = state.selectedFolder
+        if (folder != null) return listOf(volumeManager.asVolume(File(folder)))
         val all = volumeManager.listVolumes()
         return when (state.storageScope) {
             StorageScope.ALL -> all
             StorageScope.INTERNAL -> all.filter { !it.isRemovable }
             StorageScope.SD_CARD -> all.filter { it.isRemovable }
         }
+    }
+
+    /** The protected-root set to actually enforce for a run: empty if the user explicitly folder-
+     *  scoped into (or onto) a protected root themselves — that's informed consent overriding the
+     *  automatic safety net for that one run only. */
+    private fun protectionRootsForRun(state: UiState): Set<String> {
+        val all = state.effectiveProtectedRoots
+        val folder = state.selectedFolder
+        return if (folder != null && ProtectionRules.isExplicitlyScopedInto(folder, all)) emptySet() else all
+    }
+
+    // ---- folder scope / picker ----------------------------------------------------------
+
+    fun openFolderPicker() {
+        val start = _uiState.value.volumes.firstOrNull { it.isPrimary }?.root ?: _uiState.value.volumes.firstOrNull()?.root
+        _uiState.update { it.copy(folderPickerOpen = true, folderPickerCurrentPath = start) }
+        if (start != null) loadFolderPickerEntries(start)
+    }
+
+    fun closeFolderPicker() {
+        _uiState.update { it.copy(folderPickerOpen = false) }
+    }
+
+    fun navigateFolderPicker(path: String) {
+        _uiState.update { it.copy(folderPickerCurrentPath = path) }
+        loadFolderPickerEntries(path)
+    }
+
+    fun navigateFolderPickerUp() {
+        val state = _uiState.value
+        val current = state.folderPickerCurrentPath ?: return
+        if (state.volumes.any { it.root == current }) return // already at a volume root
+        val parent = File(current).parent ?: return
+        navigateFolderPicker(parent)
+    }
+
+    private fun loadFolderPickerEntries(path: String) {
+        _uiState.update { it.copy(folderPickerLoading = true) }
+        viewModelScope.launch {
+            val entries = withContextIo {
+                File(path).listFiles()
+                    ?.filter { it.isDirectory && !it.name.startsWith(".") }
+                    ?.map { it.absolutePath }
+                    ?.sorted()
+                    ?: emptyList()
+            }
+            _uiState.update { it.copy(folderPickerEntries = entries, folderPickerLoading = false) }
+        }
+    }
+
+    fun selectFolderScope(path: String) {
+        val label = File(path).name.ifBlank { path }
+        _uiState.update { it.copy(selectedFolder = path, selectedFolderLabel = label, folderPickerOpen = false) }
+        refreshPreview()
+    }
+
+    fun clearFolderScope() {
+        _uiState.update { it.copy(selectedFolder = null, selectedFolderLabel = null) }
+        refreshPreview()
+    }
+
+    // ---- protected folders ---------------------------------------------------------------
+
+    fun protectCurrentFolder() {
+        val folder = _uiState.value.selectedFolder ?: return
+        viewModelScope.launch { preferences.addProtectedFolder(folder) }
+    }
+
+    fun unprotectFolder(path: String) {
+        viewModelScope.launch { preferences.removeProtectedFolder(path) }
     }
 
     // ---- navigation / permissions --------------------------------------------------------
@@ -206,6 +329,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val scanned = scanner.scanAll { _: ScanProgress -> /* could surface live count if desired */ }
             metadataManager.saveMetadata(scanned)
             val totalSize = scanned.sumOf(FileMetadata::sizeBytes)
+            val autoRoots = ProtectionRules.detectProtectedRoots(scanned)
             _uiState.update {
                 it.copy(
                     scanning = false,
@@ -214,11 +338,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     metadata = scanned,
                     metadataExists = true,
                     metadataPath = metadataManager.metadataPath,
-                    statusText = "✅ ${scanned.size} files indexed."
+                    statusText = "✅ ${scanned.size} files indexed.",
+                    autoProtectedRoots = autoRoots
                 )
             }
             addLog("Scan complete: ${scanned.size} files, ${formatSize(totalSize)}", LogLevel.SUCCESS)
             addLog("metadata.json → ${metadataManager.metadataPath}", LogLevel.INFO)
+            if (autoRoots.isNotEmpty()) {
+                addLog(
+                    "🛡 Detected ${autoRoots.size} project/firmware folder(s) — excluded from bulk organize/delete by default",
+                    LogLevel.INFO
+                )
+            }
             refreshVolumes()
             refreshPreview()
         }
@@ -258,13 +389,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshPreview() {
         val state = _uiState.value
         val scoped = scopedMetadata(state)
+        val protectedRoots = protectionRootsForRun(state)
         if (state.selectedCommands.isEmpty() || scoped.isEmpty()) {
             _uiState.update { it.copy(previewFiles = emptyList()) }
             return
         }
         val seen = LinkedHashSet<FileMetadata>()
         outer@ for (cmd in state.selectedCommands) {
+            val exempt = cmd in CommandType.protectionExempt
             for (meta in scoped) {
+                if (!exempt && protectedRoots.isNotEmpty() && ProtectionRules.isProtected(meta.absolutePath, protectedRoots)) continue
                 if (CommandMatcher.matches(cmd, meta)) {
                     seen += meta
                     if (seen.size >= 200) break@outer
@@ -288,16 +422,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun runCommands(commands: List<CommandType>) {
         val state = _uiState.value
-        val meta = scopedMetadata(state)
-        if (meta.isEmpty()) {
+        val baseMeta = scopedMetadata(state)
+        if (baseMeta.isEmpty()) {
             addLog(
                 if (state.metadata.isEmpty()) "Scan storage first!"
-                else "No files match the current storage scope (${state.storageScope}).",
+                else "No files match the current scope.",
                 LogLevel.WARN
             )
             return
         }
         val volumesForScope = scopedVolumes(state)
+        val protectedRoots = protectionRootsForRun(state)
         _uiState.update { it.copy(activeTab = 2, executing = true, statusText = "⏳ Running ${commands.size} command(s)…") }
         executionJob = viewModelScope.launch {
             var totalOk = 0
@@ -305,7 +440,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var last: ExecutionResult? = null
             for (cmd in commands) {
                 addLog("▶ ${cmd.emoji} ${cmd.displayName}", LogLevel.INFO)
-                val result = executor.execute(cmd, meta, volumesForScope)
+                val exempt = cmd in CommandType.protectionExempt
+                val metaForCmd = if (exempt || protectedRoots.isEmpty()) baseMeta
+                else baseMeta.filterNot { ProtectionRules.isProtected(it.absolutePath, protectedRoots) }
+                val skipped = baseMeta.size - metaForCmd.size
+                if (skipped > 0) addLog("  🛡 Skipping $skipped file(s) inside protected folders", LogLevel.WARN)
+
+                val result = executor.execute(cmd, metaForCmd, volumesForScope, protectedRoots)
                 last = result
                 for (action in result.actions) {
                     val level = when (action.status) {
@@ -391,12 +532,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ---- chat ---------------------------------------------------------------------------
+    // ---- chat / AI custom commands -------------------------------------------------------
 
     fun sendChatMessage(text: String) {
         val msg = text.trim()
         if (msg.isEmpty()) return
-        _uiState.update { it.copy(chatMessages = it.chatMessages + ChatMessage("user", msg), chatSending = true) }
+        _uiState.update { it.copy(chatMessages = it.chatMessages + ChatMessage(role = "user", text = msg), chatSending = true) }
 
         viewModelScope.launch {
             val meta = _uiState.value.metadata
@@ -413,12 +554,85 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 CommandParser.matchOffline(msg).takeIf { it != CommandType.UNKNOWN }
             } else null
 
+            // Only attempt to build a custom (non-catalog) action when nothing in the built-in
+            // catalog matched and the message actually looks like a file-operation instruction —
+            // avoids firing this on ordinary conversation.
+            var pending: PendingCustomAction? = null
+            if (detected == null && meta.isNotEmpty() && looksLikeCustomInstruction(msg)) {
+                val volumes = volumeManager.listVolumes()
+                val availableFolders = meta.map { it.parentPath }.toHashSet()
+                val customAction = CustomCommandParser.parseWithAi(msg, gemini, volumes, availableFolders)
+                if (customAction != null) {
+                    val matched = CustomCommandParser.matchFiles(customAction, meta)
+                    pending = PendingCustomAction(customAction, matched)
+                }
+            }
+
             _uiState.update {
                 it.copy(
-                    chatMessages = it.chatMessages + ChatMessage("assistant", reply, detected),
+                    chatMessages = it.chatMessages + ChatMessage(
+                        role = "assistant", text = reply, detectedCommand = detected, pendingCustomAction = pending
+                    ),
                     chatSending = false
                 )
             }
+        }
+    }
+
+    private fun looksLikeCustomInstruction(msg: String): Boolean {
+        val l = msg.lowercase()
+        if (!CommandParser.looksLikeCommand(msg)) return false
+        return l.contains("folder") || l.contains(" files") || Regex("""\.[a-z0-9]{2,4}\b""").containsMatchIn(l)
+    }
+
+    /** Confirms and runs a pending custom action attached to chat message [messageId] — exactly
+     *  the file list and destination the user already reviewed in the confirmation card, nothing
+     *  is re-interpreted at this point. */
+    fun confirmCustomAction(messageId: String) {
+        val msg = _uiState.value.chatMessages.firstOrNull { it.id == messageId } ?: return
+        val pending = msg.pendingCustomAction ?: return
+        if (msg.resolution != null || pending.matchedFiles.isEmpty()) return
+
+        markResolution(messageId, CustomActionResolution.CONFIRMED)
+        _uiState.update { it.copy(activeTab = 2, executing = true, statusText = "⏳ Running custom action…") }
+        executionJob = viewModelScope.launch {
+            addLog("▶ 🤖 ${pending.action.summary}", LogLevel.INFO)
+            val result = executor.executeCustom(pending.action, pending.matchedFiles)
+            for (action in result.actions) {
+                val level = when (action.status) {
+                    ActionStatus.SUCCESS -> LogLevel.SUCCESS
+                    ActionStatus.SKIPPED -> LogLevel.WARN
+                    ActionStatus.FAILED -> LogLevel.ERROR
+                }
+                val prefix = when (action.status) {
+                    ActionStatus.SUCCESS -> "✓"
+                    ActionStatus.SKIPPED -> "~"
+                    ActionStatus.FAILED -> "✗"
+                }
+                addLog("  $prefix ${action.fileName}  [${action.action}]  ${action.detail}", level)
+            }
+            addLog("═══ Done: ${result.summary} ═══", LogLevel.INFO)
+            _uiState.update {
+                it.copy(
+                    executing = false,
+                    statusText = "✅ Done — ${result.summary}",
+                    lastResult = result,
+                    canUndo = result.actions.any { a -> a.undo != null }
+                )
+            }
+            val refreshed = metadataManager.loadMetadata()
+            _uiState.update { it.copy(metadata = refreshed) }
+            refreshPreview()
+        }
+    }
+
+    fun cancelCustomAction(messageId: String) {
+        markResolution(messageId, CustomActionResolution.CANCELLED)
+    }
+
+    private fun markResolution(messageId: String, resolution: CustomActionResolution) {
+        _uiState.update { s ->
+            s.copy(chatMessages = s.chatMessages.map { if (it.id == messageId) it.copy(resolution = resolution) else it })
         }
     }
 
@@ -446,7 +660,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?: "No files indexed yet."
             l.contains("duplicate") -> "Use 'Delete Duplicates' in the Cleanup section — SHA-256 verified."
             l.contains("whatsapp") -> "WhatsApp commands are in the Social Media section. Move images, videos, or clean sent junk."
-            else -> "I can help organize, clean, and analyze your files. Try asking about duplicates, large files, or file types!"
+            l.contains("protect") -> "Pick a folder in the Storage card and tap \"Protect this folder\" to keep bulk commands out of it."
+            else -> "I can help organize, clean, and analyze your files — or describe a specific move/copy/delete " +
+                "and I'll build it for you to review before anything changes."
         }
     }
 

@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import com.willykez.files.data.FileTypeResolver
 import com.willykez.files.data.model.ActionStatus
 import com.willykez.files.data.model.CommandType
+import com.willykez.files.data.model.CustomAction
+import com.willykez.files.data.model.CustomActionType
 import com.willykez.files.data.model.ExecutionResult
 import com.willykez.files.data.model.FileMetadata
 import com.willykez.files.data.model.UndoableMove
@@ -35,7 +37,10 @@ class CommandExecutor(private val context: Context) {
 
     private val volumeManager = StorageVolumeManager(context)
 
-    suspend fun execute(command: CommandType, metadata: List<FileMetadata>, volumes: List<StorageVolume>? = null): ExecutionResult =
+    suspend fun execute(
+        command: CommandType, metadata: List<FileMetadata>, volumes: List<StorageVolume>? = null,
+        protectedRoots: Set<String> = emptySet()
+    ): ExecutionResult =
         withContext(Dispatchers.IO) {
             val result = ExecutionResult(command)
             val resolvedVolumes = volumes ?: volumeManager.listVolumes()
@@ -65,7 +70,7 @@ class CommandExecutor(private val context: Context) {
                 CommandType.MOVE_ARCHIVES_TO_EXTERNAL -> moveToSdCard(metadata, result, command, "Organized/Archives", "Move archive to SD")
 
                 CommandType.DELETE_DUPLICATES -> deleteDuplicates(metadata, result)
-                CommandType.DELETE_EMPTY_FOLDERS -> deleteEmptyFolders(result, resolvedVolumes)
+                CommandType.DELETE_EMPTY_FOLDERS -> deleteEmptyFolders(result, resolvedVolumes, protectedRoots)
                 CommandType.DELETE_TEMP_FILES -> deleteMatching(metadata, result, command, "Delete temp file")
                 CommandType.DELETE_APKS -> deleteApks(metadata, result, unusedOnly = false)
                 CommandType.DELETE_UNUSED_APKS -> deleteApks(metadata, result, unusedOnly = true)
@@ -120,6 +125,51 @@ class CommandExecutor(private val context: Context) {
         }
         undoResult
     }
+
+    /**
+     * Runs a [CustomAction] parsed from free-text chat input against an already-resolved,
+     * already-confirmed list of matched files (the confirmation card in the UI is what makes
+     * this safe — nothing here re-interprets intent, it just executes exactly what the user saw
+     * and approved).
+     */
+    suspend fun executeCustom(action: CustomAction, matchedFiles: List<FileMetadata>): ExecutionResult =
+        withContext(Dispatchers.IO) {
+            val result = ExecutionResult(CommandType.UNKNOWN)
+            when (action.actionType) {
+                CustomActionType.MOVE -> {
+                    val destDir = File(action.destinationPath ?: return@withContext result).apply { mkdirs() }
+                    for (meta in matchedFiles) moveFile(File(meta.absolutePath), destDir, result, "Custom move")
+                }
+                CustomActionType.COPY -> {
+                    val destDir = File(action.destinationPath ?: return@withContext result).apply { mkdirs() }
+                    for (meta in matchedFiles) {
+                        currentCoroutineContext().ensureActive()
+                        val src = File(meta.absolutePath)
+                        if (!src.exists()) {
+                            result.add(ActionStatus.SKIPPED, src.name, "Custom copy", "Source not found")
+                            continue
+                        }
+                        val dest = resolveConflict(File(destDir, src.name))
+                        try {
+                            copyFile(src, dest)
+                            result.add(ActionStatus.SUCCESS, src.name, "Custom copy", "→ ${destDir.path}")
+                        } catch (e: Exception) {
+                            result.add(ActionStatus.FAILED, src.name, "Custom copy", e.message ?: "Copy failed")
+                        }
+                    }
+                }
+                CustomActionType.DELETE -> {
+                    for (meta in matchedFiles) {
+                        currentCoroutineContext().ensureActive()
+                        val src = File(meta.absolutePath)
+                        if (!src.exists()) continue
+                        if (src.delete()) result.add(ActionStatus.SUCCESS, meta.name, "Custom delete", meta.parentPath)
+                        else result.add(ActionStatus.FAILED, meta.name, "Custom delete", "Could not delete")
+                    }
+                }
+            }
+            result
+        }
 
     // ---- shared helpers -----------------------------------------------------------------
 
@@ -338,21 +388,24 @@ class CommandExecutor(private val context: Context) {
         }
     }
 
-    private suspend fun deleteEmptyFolders(result: ExecutionResult, volumes: List<StorageVolume>) {
+    private suspend fun deleteEmptyFolders(result: ExecutionResult, volumes: List<StorageVolume>, protectedRoots: Set<String>) {
         for (volume in volumes) {
             currentCoroutineContext().ensureActive()
-            deleteEmptyFoldersRecursive(volume.root, result)
+            deleteEmptyFoldersRecursive(volume.root, result, protectedRoots)
         }
     }
 
-    private suspend fun deleteEmptyFoldersRecursive(dir: File, result: ExecutionResult): Boolean {
+    private suspend fun deleteEmptyFoldersRecursive(dir: File, result: ExecutionResult, protectedRoots: Set<String>): Boolean {
         currentCoroutineContext().ensureActive()
+        // Never descend into (or consider for deletion) a protected folder — and treating it as
+        // "not empty" also stops its ancestor chain from being purged out from under it.
+        if (ProtectionRules.isProtected(dir.absolutePath, protectedRoots)) return false
         if (!dir.exists() || !dir.isDirectory) return false
         val children = dir.listFiles() ?: return true
         var allGone = true
         for (child in children) {
             if (child.isDirectory) {
-                val childEmpty = deleteEmptyFoldersRecursive(child, result)
+                val childEmpty = deleteEmptyFoldersRecursive(child, result, protectedRoots)
                 if (childEmpty && child.delete()) {
                     result.add(ActionStatus.SUCCESS, child.name, "Delete empty folder", child.parent ?: "")
                 } else {

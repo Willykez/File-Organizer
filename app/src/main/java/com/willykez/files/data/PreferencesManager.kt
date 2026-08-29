@@ -19,6 +19,7 @@ class PreferencesManager(private val context: Context) {
         val AUTO_ORGANIZE_ENABLED = booleanPreferencesKey("auto_organize_enabled")
         val NIGHTLY_CLEANUP_ENABLED = booleanPreferencesKey("nightly_cleanup_enabled")
         val STORAGE_SCOPE = stringPreferencesKey("storage_scope")
+        val PROTECTED_FOLDERS = stringSetPreferencesKey("protected_folders")
     }
 
     val selectedCommandNames: Flow<Set<String>> =
@@ -48,5 +49,24 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setStorageScope(scope: String) {
         context.dataStore.edit { it[Keys.STORAGE_SCOPE] = scope }
+    }
+
+    /** Absolute folder paths bulk commands must never reach into — user-marked, on top of the
+     *  auto-detected project/firmware roots from [com.willykez.files.domain.ProtectionRules]. */
+    val protectedFolders: Flow<Set<String>> =
+        context.dataStore.data.map { it[Keys.PROTECTED_FOLDERS] ?: emptySet() }
+
+    suspend fun addProtectedFolder(path: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.PROTECTED_FOLDERS] ?: emptySet()
+            prefs[Keys.PROTECTED_FOLDERS] = current + path
+        }
+    }
+
+    suspend fun removeProtectedFolder(path: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.PROTECTED_FOLDERS] ?: emptySet()
+            prefs[Keys.PROTECTED_FOLDERS] = current - path
+        }
     }
 }

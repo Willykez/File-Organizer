@@ -65,6 +65,20 @@ class StorageVolumeManager(private val context: Context) {
 
     fun primaryVolume(): StorageVolume? = listVolumes().firstOrNull { it.isPrimary }
 
+    /** Wraps an arbitrary folder as a pseudo-volume so folder-scoped commands can reuse all the
+     *  same per-volume executor logic (organize destination placement, empty-folder walk, etc.)
+     *  without duplicating it. [isRemovable] is inherited from whichever real volume the folder
+     *  is physically under. */
+    fun asVolume(folder: java.io.File): StorageVolume {
+        val real = volumeContaining(folder.absolutePath)
+        return StorageVolume(
+            root = folder,
+            label = folder.name.ifBlank { folder.absolutePath },
+            isRemovable = real?.isRemovable ?: false,
+            isPrimary = false
+        )
+    }
+
     /** The volume whose root is the longest matching prefix of [absolutePath]. */
     fun volumeContaining(absolutePath: String, knownVolumes: List<StorageVolume> = listVolumes()): StorageVolume? =
         knownVolumes.filter { absolutePath.startsWith(it.root.absolutePath) }

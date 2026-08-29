@@ -48,12 +48,15 @@ import com.willykez.files.ui.theme.Glass2
 import com.willykez.files.ui.theme.Primary
 import com.willykez.files.ui.theme.TextDim
 import com.willykez.files.ui.theme.TextMain
+import com.willykez.files.ui.theme.TextMid
 
 @Composable
 fun ChatScreen(
     state: UiState,
     onSend: (String) -> Unit,
-    onRunDetected: (CommandType) -> Unit
+    onRunDetected: (CommandType) -> Unit,
+    onConfirmCustomAction: (String) -> Unit = {},
+    onCancelCustomAction: (String) -> Unit = {}
 ) {
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -70,7 +73,7 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(state.chatMessages) { msg ->
-                ChatBubble(msg, onRunDetected)
+                ChatBubble(msg, onRunDetected, onConfirmCustomAction, onCancelCustomAction)
             }
             if (state.chatSending) {
                 item { TypingBubble() }
@@ -114,7 +117,12 @@ fun ChatScreen(
 }
 
 @Composable
-private fun ChatBubble(msg: ChatMessage, onRunDetected: (CommandType) -> Unit) {
+private fun ChatBubble(
+    msg: ChatMessage,
+    onRunDetected: (CommandType) -> Unit,
+    onConfirmCustomAction: (String) -> Unit,
+    onCancelCustomAction: (String) -> Unit
+) {
     val isUser = msg.role == "user"
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -132,6 +140,16 @@ private fun ChatBubble(msg: ChatMessage, onRunDetected: (CommandType) -> Unit) {
             msg.detectedCommand?.let { cmd ->
                 Spacer(Modifier.height(6.dp))
                 DetectedCommandCard(cmd, onRunDetected)
+            }
+            msg.pendingCustomAction?.let { pending ->
+                Spacer(Modifier.height(6.dp))
+                CustomActionCard(
+                    messageId = msg.id,
+                    pending = pending,
+                    resolution = msg.resolution,
+                    onConfirm = onConfirmCustomAction,
+                    onCancel = onCancelCustomAction
+                )
             }
         }
     }
@@ -157,6 +175,64 @@ private fun DetectedCommandCard(command: CommandType, onRunDetected: (CommandTyp
                 backgroundColor = Primary,
                 onClick = { onRunDetected(command) }
             )
+        }
+    }
+}
+
+@Composable
+private fun CustomActionCard(
+    messageId: String,
+    pending: com.willykez.files.ui.PendingCustomAction,
+    resolution: com.willykez.files.ui.CustomActionResolution?,
+    onConfirm: (String) -> Unit,
+    onCancel: (String) -> Unit
+) {
+    GlassCard(fill = Accent.copy(alpha = 0.12f)) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🤖", fontSize = 16.sp)
+                Spacer(Modifier.width(8.dp))
+                Text("Custom action — not a built-in command", color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(pending.action.summary, color = TextMain, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(6.dp))
+
+            if (pending.matchedFiles.isEmpty()) {
+                Text("No matching files found — nothing would happen.", color = TextDim, fontSize = 11.sp)
+            } else {
+                Text("${pending.matchedFiles.size} file(s) will be affected:", color = TextDim, fontSize = 11.sp)
+                Spacer(Modifier.height(4.dp))
+                pending.matchedFiles.take(5).forEach { f ->
+                    Text("• ${f.name}", color = TextMid, fontSize = 11.sp, maxLines = 1)
+                }
+                if (pending.matchedFiles.size > 5) {
+                    Text("…and ${pending.matchedFiles.size - 5} more", color = TextDim, fontSize = 11.sp)
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            when (resolution) {
+                com.willykez.files.ui.CustomActionResolution.CONFIRMED ->
+                    Text("✓ Confirmed — see the Log tab", color = Primary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                com.willykez.files.ui.CustomActionResolution.CANCELLED ->
+                    Text("✗ Cancelled", color = TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                null -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GlowButton(
+                        label = "Cancel",
+                        color = TextMid,
+                        backgroundColor = Glass2,
+                        onClick = { onCancel(messageId) }
+                    )
+                    GlowButton(
+                        label = "Confirm & Run",
+                        color = androidx.compose.ui.graphics.Color.Black,
+                        backgroundColor = Primary,
+                        enabled = pending.matchedFiles.isNotEmpty(),
+                        onClick = { onConfirm(messageId) }
+                    )
+                }
+            }
         }
     }
 }

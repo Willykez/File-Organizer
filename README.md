@@ -15,6 +15,18 @@ same app. See [MIGRATION.md](MIGRATION.md) for exactly what changed and why.
   storage volume (internal + SD card/USB-OTG), not just internal storage. A scope selector on the
   Commands tab lets you restrict a run to "Internal Only" or "SD Card Only" when an SD card is
   present; "Move to SD Card" commands remain a deliberate exception for pulling files onto it
+- **Folder-scoped actions** — pick a specific folder via an in-app browser and every command
+  (built-in or custom) runs inside that folder only, instead of sweeping the whole device
+- **Protected folders** — source-code repos and firmware/ROM dumps are auto-detected (by marker
+  files like `build.gradle`, `.git`, or a `system`/`vendor` layout) and excluded from bulk
+  organize/move/delete commands by default, so they can't be shredded file-by-file. You can also
+  mark any folder as protected by hand. Explicitly scoping a command into a protected folder via
+  the folder picker overrides the automatic skip for that one run
+- **AI-built custom commands** — describe a specific operation in the AI Chat tab ("move all .mkv
+  files from Downloads to the SD card Movies folder") and it's parsed into a concrete plan —
+  matched files, source, destination — shown for review before anything changes, the same way a
+  code-review tool shows a diff before you commit it. Works fully offline via keyword heuristics;
+  an optional Gemini key makes the parsing more flexible
 - **AI Chat tab** — describe what you want in plain English or Swahili ("panga picha za skrini",
   "clean up my whatsapp junk") and it detects the matching command; works fully offline, with an
   optional Gemini-powered mode for more natural replies

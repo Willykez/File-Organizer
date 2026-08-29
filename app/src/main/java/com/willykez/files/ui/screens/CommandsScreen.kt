@@ -68,7 +68,11 @@ fun CommandsScreen(
     onExecute: () -> Unit,
     onToggleAutoOrganize: (Boolean) -> Unit = {},
     onToggleNightlyCleanup: (Boolean) -> Unit = {},
-    onScopeChange: (StorageScope) -> Unit = {}
+    onScopeChange: (StorageScope) -> Unit = {},
+    onOpenFolderPicker: () -> Unit = {},
+    onClearFolderScope: () -> Unit = {},
+    onProtectCurrentFolder: () -> Unit = {},
+    onUnprotectFolder: (String) -> Unit = {}
 ) {
     val query = state.searchQuery.lowercase()
     val categories = Category.entries.filter { it != Category.AUTOMATION }
@@ -99,9 +103,12 @@ fun CommandsScreen(
         ) {
             item {
                 StorageScopeCard(
-                    volumes = state.volumes,
-                    scope = state.storageScope,
-                    onScopeChange = onScopeChange
+                    state = state,
+                    onScopeChange = onScopeChange,
+                    onOpenFolderPicker = onOpenFolderPicker,
+                    onClearFolderScope = onClearFolderScope,
+                    onProtectCurrentFolder = onProtectCurrentFolder,
+                    onUnprotectFolder = onUnprotectFolder
                 )
             }
             item {
@@ -141,17 +148,24 @@ fun CommandsScreen(
 
 @Composable
 private fun StorageScopeCard(
-    volumes: List<VolumeInfo>,
-    scope: StorageScope,
-    onScopeChange: (StorageScope) -> Unit
+    state: UiState,
+    onScopeChange: (StorageScope) -> Unit,
+    onOpenFolderPicker: () -> Unit,
+    onClearFolderScope: () -> Unit,
+    onProtectCurrentFolder: () -> Unit,
+    onUnprotectFolder: (String) -> Unit
 ) {
-    val sdCards = volumes.filter { it.isRemovable }
+    val sdCards = state.volumes.filter { it.isRemovable }
+    val selectedFolder = state.selectedFolder
+    val folderIsProtected = selectedFolder != null && state.effectiveProtectedRoots.any {
+        selectedFolder == it || selectedFolder.startsWith("$it/") || it.startsWith("$selectedFolder/")
+    }
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text("💾 Storage", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Spacer(Modifier.height(8.dp))
 
-            volumes.forEach { volume ->
+            state.volumes.forEach { volume ->
                 VolumeRow(volume)
                 Spacer(Modifier.height(4.dp))
             }
@@ -163,9 +177,67 @@ private fun StorageScopeCard(
                 Text("Run commands on:", color = TextMid, fontSize = 11.sp)
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ScopeChip("All Storage", scope == StorageScope.ALL) { onScopeChange(StorageScope.ALL) }
-                    ScopeChip("Internal Only", scope == StorageScope.INTERNAL) { onScopeChange(StorageScope.INTERNAL) }
-                    ScopeChip("SD Card Only", scope == StorageScope.SD_CARD) { onScopeChange(StorageScope.SD_CARD) }
+                    ScopeChip("All Storage", state.storageScope == StorageScope.ALL && state.selectedFolder == null) {
+                        onScopeChange(StorageScope.ALL)
+                    }
+                    ScopeChip("Internal Only", state.storageScope == StorageScope.INTERNAL && state.selectedFolder == null) {
+                        onScopeChange(StorageScope.INTERNAL)
+                    }
+                    ScopeChip("SD Card Only", state.storageScope == StorageScope.SD_CARD && state.selectedFolder == null) {
+                        onScopeChange(StorageScope.SD_CARD)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text("Folder scope:", color = TextMid, fontSize = 11.sp)
+            Spacer(Modifier.height(6.dp))
+            if (selectedFolder == null) {
+                Text(
+                    "Off — commands run against the scope above. Pick a folder to run inside it only.",
+                    color = TextDim, fontSize = 10.5.sp
+                )
+                Spacer(Modifier.height(6.dp))
+                ScopeChip("📁 Choose folder…", selected = false, onClick = onOpenFolderPicker)
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(state.selectedFolderLabel ?: "", color = Primary, fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+                        Text(selectedFolder, color = TextDim, fontSize = 9.5.sp, maxLines = 2)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ScopeChip("Change", selected = false, onClick = onOpenFolderPicker)
+                    ScopeChip("Clear", selected = false, onClick = onClearFolderScope)
+                    if (!folderIsProtected) {
+                        ScopeChip("🛡 Protect this folder", selected = false, onClick = onProtectCurrentFolder)
+                    } else {
+                        Text("🛡 Already protected", color = Warn, fontSize = 10.5.sp, modifier = Modifier.padding(top = 8.dp))
+                    }
+                }
+            }
+
+            if (state.effectiveProtectedRoots.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text("Protected folders (skipped by bulk commands):", color = TextMid, fontSize = 11.sp)
+                Spacer(Modifier.height(4.dp))
+                state.effectiveProtectedRoots.sorted().forEach { path ->
+                    val isUserMarked = path in state.userProtectedFolders
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                        Text("🛡", fontSize = 11.sp)
+                        Spacer(Modifier.width(6.dp))
+                        Text(path.substringAfterLast('/'), color = TextMid, fontSize = 10.5.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                        if (isUserMarked) {
+                            Text(
+                                "remove",
+                                color = ErrorRed, fontSize = 10.sp,
+                                modifier = Modifier.clickable { onUnprotectFolder(path) }
+                            )
+                        } else {
+                            Text("auto", color = TextDim, fontSize = 10.sp)
+                        }
+                    }
                 }
             }
         }

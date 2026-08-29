@@ -49,6 +49,24 @@ document lists what changed in the Kotlin/Compose rewrite and why.
   `Not implemented`. They're now real scheduled jobs.
 - **Multi-volume storage support.** Every command that used to assume "storage" meant internal
   storage now operates across every mounted volume (see the SD card fix above).
+- **Folder-scoped commands.** Any command can be restricted to a single folder via an in-app
+  browser, instead of always sweeping the entire selected storage scope.
+- **Protected folders.** A real data-loss report: running "Organize by Type" against a device with
+  an extracted Android project and an unpacked stock ROM scattered every source/firmware file into
+  `Organized/<category>` by extension, destroying both — a project's `.kt`/`.xml`/`.json` files
+  need to sit exactly where the build expects them, and a ROM dump's `system/`/`vendor/` layout is
+  load-bearing for flashing tools. `ProtectionRules` now auto-detects these (project markers like
+  `build.gradle`/`.git`, or a firmware-looking `system`+`vendor`+`META-INF` sibling layout) and
+  bulk organize/move/delete commands skip anything under a protected root by default. Users can
+  also mark folders as protected by hand from the Storage card. Developer-tool commands that are
+  *meant* to reach inside a project (node_modules removal, build-output cleanup, Gradle cache) and
+  the "Organize Code Projects" command (which moves whole project folders intact rather than
+  shredding them file-by-file) are deliberately exempt.
+- **AI-built custom commands.** The built-in catalog covers common cases, but the AI Chat tab can
+  now also parse an arbitrary instruction ("move all .mkv files from Downloads to the SD card
+  Movies folder") into a concrete plan and show it for review — matched files, source, destination
+  — before anything on disk changes, mirroring a code-review "diff before commit" flow rather than
+  acting on a natural-language guess.
 - **Persisted preferences (DataStore).** Selected commands and automation toggles now survive an
   app restart; previously nothing was persisted beyond the file metadata cache itself.
 - **Cancellable, coroutine-based execution.** Long-running scans/commands can be cancelled from

@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.willykez.files.data.model.CommandType
+import com.willykez.files.ui.components.FolderPickerDialog
 import com.willykez.files.ui.components.GlowButton
 import com.willykez.files.ui.screens.ChatScreen
 import com.willykez.files.ui.screens.CommandsBottomBar
@@ -134,12 +135,18 @@ fun MainScreen(
                     onExecute = { showConfirmExecute = true },
                     onToggleAutoOrganize = viewModel::setAutoOrganizeEnabled,
                     onToggleNightlyCleanup = viewModel::setNightlyCleanupEnabled,
-                    onScopeChange = viewModel::setStorageScope
+                    onScopeChange = viewModel::setStorageScope,
+                    onOpenFolderPicker = viewModel::openFolderPicker,
+                    onClearFolderScope = viewModel::clearFolderScope,
+                    onProtectCurrentFolder = viewModel::protectCurrentFolder,
+                    onUnprotectFolder = viewModel::unprotectFolder
                 )
                 1 -> ChatScreen(
                     state = state,
                     onSend = viewModel::sendChatMessage,
-                    onRunDetected = { cmd -> viewModel.executeSingle(cmd) }
+                    onRunDetected = { cmd -> viewModel.executeSingle(cmd) },
+                    onConfirmCustomAction = viewModel::confirmCustomAction,
+                    onCancelCustomAction = viewModel::cancelCustomAction
                 )
                 2 -> LogScreen(
                     state = state,
@@ -156,12 +163,15 @@ fun MainScreen(
         val destructive = state.selectedCommands.any {
             it.kind == com.willykez.files.data.model.OperationKind.DELETE
         }
+        val protectedCount = state.effectiveProtectedRoots.size
+        val scopeLine = state.selectedFolderLabel?.let { "Scope: folder \"$it\" only.\n\n" } ?: ""
+        val protectionLine = if (protectedCount > 0) "$protectedCount protected folder(s) will be automatically skipped.\n\n" else ""
         AlertDialog(
             onDismissRequest = { showConfirmExecute = false },
             title = { Text("Run ${state.selectedCommands.size} command(s)?") },
             text = {
                 Text(
-                    if (destructive)
+                    scopeLine + protectionLine + if (destructive)
                         "This includes one or more delete operations. Files removed this way cannot be recovered. Continue?"
                     else
                         "Files will be moved/organized on your device. Move operations can be undone from the Log tab afterward."
@@ -181,6 +191,19 @@ fun MainScreen(
             dismissButton = {
                 GlowButton(label = "Cancel", color = TextMid, backgroundColor = Glass, onClick = { showConfirmExecute = false })
             }
+        )
+    }
+
+    if (state.folderPickerOpen) {
+        FolderPickerDialog(
+            currentPath = state.folderPickerCurrentPath,
+            entries = state.folderPickerEntries,
+            loading = state.folderPickerLoading,
+            canGoUp = state.folderPickerCurrentPath?.let { current -> state.volumes.none { it.root == current } } ?: false,
+            onNavigate = viewModel::navigateFolderPicker,
+            onNavigateUp = viewModel::navigateFolderPickerUp,
+            onSelect = viewModel::selectFolderScope,
+            onDismiss = viewModel::closeFolderPicker
         )
     }
 }
