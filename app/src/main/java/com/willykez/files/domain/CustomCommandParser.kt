@@ -95,7 +95,7 @@ object CustomCommandParser {
      *  offline parser if Gemini is unavailable or returns something we can't safely resolve. */
     suspend fun parseWithAi(
         text: String,
-        gemini: GeminiClient,
+        gemini: AiClient,
         volumes: List<StorageVolume>,
         availableFolders: Set<String>
     ): CustomAction? {

@@ -4,9 +4,12 @@ import androidx.compose.ui.graphics.Color
 
 // Ported 1:1 from the original hand-rolled View palette, so the app keeps its identity.
 val BgSpace = Color(0xFF060810)
+val BgSpace2 = Color(0xFF0B0E1A)
 val Glass = Color(0x14FFFFFF)
 val Glass2 = Color(0x0CFFFFFF)
+val GlassStrong = Color(0x1FFFFFFF)
 val BorderGlass = Color(0x22FFFFFF)
+val BorderGlow = Color(0x40FFFFFF)
 val Aurora1 = Color(0xFF7C3AED)
 val Aurora2 = Color(0xFF06B6D4)
 val Pink = Color(0xFFEC4899)

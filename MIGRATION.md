@@ -79,12 +79,40 @@ document lists what changed in the Kotlin/Compose rewrite and why.
   it now applies the same `ProtectionRules` as a manual run, and posts a summary notification when
   it finishes (closing a gap where `POST_NOTIFICATIONS` was declared in the manifest but never
   actually used).
+- **Custom automation rules.** The two built-in presets only ever touched Downloads/Screenshots
+  (organize) or temp files/empty folders (cleanup) across the whole device. Settings now has a
+  full rules editor: name a rule, pick a specific folder via the same in-app browser used for
+  manual folder scoping (or a broader internal/SD-card scope), choose any combination of commands,
+  and set an interval from hourly to weekly. Rules are persisted as JSON in app-private storage
+  and each gets its own WorkManager periodic job. Unlike a manual run, a rule's folder scope never
+  overrides protection — there's no person present at 3am to grant that informed-consent exception,
+  so `AutomationRuleWorker` always filters against the full protected-root set.
 - **Persisted preferences (DataStore).** Selected commands and automation toggles now survive an
   app restart; previously nothing was persisted beyond the file metadata cache itself.
 - **Cancellable, coroutine-based execution.** Long-running scans/commands can be cancelled from
   the Log tab instead of having to force-close the app.
 - **Live file preview** before running a command, showing exactly what will be touched.
+- **Multi-provider AI.** Chat and custom-command parsing were hardcoded to Gemini via a single
+  `GeminiClient`. Introduced an `AiClient` interface (`GeminiClient` and a shared
+  `OpenAiCompatibleClient` powering `Groq`/`Mistral`), an `AiClientFactory` that builds the right
+  one for whichever provider is selected, and a per-provider encrypted key slot in `ApiKeyManager`
+  (`api_key_<PROVIDER>`, migrating a pre-existing single Gemini key automatically). Settings now
+  has a provider picker instead of a single fixed key field.
+- **Visual pass.** Replaced the flat background fill with a slowly-drifting ambient gradient
+  (`AuroraBackground`) behind every screen; refined the AI Chat tab's detected/custom-action cards
+  into structured "tool call" blocks (icon badge, colored accent bar, status pill, monospace file
+  list, entrance animation) so a pending action reads as a distinct reviewable unit rather than
+  another paragraph of chat text; animated the category-expand chevron in the Commands tab.
 - Unit tests for the offline command parser, file-type resolver, and volume-aware metadata model.
+
+## Note on a divergent fork
+
+If you've renamed the package or extended this project independently (e.g. into a
+"Code-Organizer"/`com.willykez.codeorganizer` variant with its own `AiClientFactory`/
+`ChatViewModel`), this document and codebase describe the `com.willykez.files` lineage only —
+symbol names here (`AiClient`, `AiClientFactory`, `MainViewModel`) may not match a divergent
+fork's equivalents (e.g. `AgentClient`, `ChatViewModel`) exactly. Treat this as a reference
+implementation to merge from rather than a drop-in patch if your fork has already diverged.
 
 ## Unchanged by design
 

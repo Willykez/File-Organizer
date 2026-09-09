@@ -27,11 +27,22 @@ same app. See [MIGRATION.md](MIGRATION.md) for exactly what changed and why.
   matched files, source, destination — shown for review before anything changes, the same way a
   code-review tool shows a diff before you commit it. Works fully offline via keyword heuristics;
   an optional Gemini key makes the parsing more flexible
+- **Choice of AI provider** — Settings now lets you pick between Google Gemini, Groq, or Mistral
+  (each with its own encrypted key slot), instead of Gemini being the only option
+- **Ambient, animated background and refined chat UI** — every screen sits on a slowly drifting
+  aurora gradient instead of a flat fill, and detected/custom actions in the AI Chat tab render as
+  structured "tool call" cards (icon badge, accent bar, status pill, monospace file list) closer
+  to how Claude Code presents an action for review before it runs
+- **Custom, folder-scoped automation rules** — beyond the two built-in presets, create named
+  automation rules from Settings: pick a folder (or a coarser internal/SD-card scope), choose
+  which commands to run, and set how often. Since these run unattended with no one present to
+  confirm anything, protected folders are always enforced in full — there's no override, even if
+  a rule happens to be scoped onto a folder that's since become a detected project root
 - **Settings tab** — add or remove your own Gemini API key at runtime (encrypted on-device, no
   rebuild needed), plus toggles for automation notifications, scan behavior, confirmation
   dialogs, auto-protection, and a one-tap way to clear the on-device scan index
-- **Automation notifications** — Daily Auto-Organize and Nightly Cleanup now post a summary
-  notification when they finish running in the background
+- **Automation notifications** — Daily Auto-Organize, Nightly Cleanup, and any custom rule now
+  post a summary notification when they finish running in the background
 - **AI Chat tab** — describe what you want in plain English or Swahili ("panga picha za skrini",
   "clean up my whatsapp junk") and it detects the matching command; works fully offline, with an
   optional Gemini-powered mode for more natural replies
@@ -55,20 +66,21 @@ same app. See [MIGRATION.md](MIGRATION.md) for exactly what changed and why.
    ```
    ./gradlew assembleDebug
    ```
-2. (Optional) Enable the online AI Chat mode one of two ways:
-   - **In-app (recommended)** — open the **Settings** tab → *AI Integration* → paste your key and
-     tap **Save Key**. It's stored encrypted on-device (`EncryptedSharedPreferences`, Android
-     Keystore-backed) and takes effect immediately, no rebuild required. Tap **Test Connection**
-     to verify it works, or **Remove Key** to go back to offline-only.
-   - **At build time** — copy `local.properties.example` to `local.properties` and add:
-     ```
-     GEMINI_API_KEY=your-key-here
-     ```
-     `local.properties` is gitignored — **never commit a real key**. A key entered in-app always
-     takes priority over this one while it's set.
+2. (Optional) Enable the online AI Chat mode. Settings → *AI Integration* lets you pick a provider
+   — **Google Gemini**, **Groq**, or **Mistral** — and paste in your own key for it, stored
+   encrypted on-device (`EncryptedSharedPreferences`, Android Keystore-backed), effective
+   immediately with no rebuild required. Each provider has its own key slot, a "Get a free key ↗"
+   shortcut to its signup page, and a **Test Connection** button. **Remove Key** returns that
+   provider to offline-only.
 
-   Get a free key from [Google AI Studio](https://aistudio.google.com/apikey) — there's also a
-   shortcut button for this right in the Settings screen.
+   For Gemini specifically, you can alternatively bake a key in at build time — copy
+   `local.properties.example` to `local.properties` and add:
+   ```
+   GEMINI_API_KEY=your-key-here
+   ```
+   `local.properties` is gitignored — **never commit a real key**. A key entered in-app always
+   takes priority over this one while it's set. Groq and Mistral are runtime-key-only (no
+   build-time fallback).
 
    Without any key, the app runs entirely offline and every command still works; only chat
    replies and custom-command parsing fall back to simpler, locally-computed logic.
@@ -102,12 +114,15 @@ decoded keystore file immediately afterward regardless of outcome.
 ## Architecture
 
 ```
-data/           Models (FileMetadata, ExecutionResult, CommandType, CustomAction),
-                FileTypeResolver, MetadataManager (JSON persistence),
-                PreferencesManager (DataStore), ApiKeyManager (encrypted key storage)
+data/           Models (FileMetadata, ExecutionResult, CommandType, CustomAction, AutomationRule,
+                AiProvider), FileTypeResolver, MetadataManager (JSON persistence),
+                PreferencesManager (DataStore), ApiKeyManager (encrypted, per-provider key storage),
+                AutomationRulesManager (JSON persistence for custom rules)
 domain/         StorageScanner, StorageVolumeManager, CommandMatcher, CommandExecutor,
-                CommandParser, CustomCommandParser, GeminiClient, ProtectionRules
-automation/     WorkManager worker + scheduler for background automation, NotificationHelper
+                CommandParser, CustomCommandParser, ProtectionRules,
+                AiClient/AiClientFactory + GeminiClient/OpenAiCompatibleClient (Groq, Mistral)
+automation/     WorkManager workers (built-in presets + custom rules) + scheduler,
+                NotificationHelper
 permissions/    Storage + notification permission helpers (scoped storage + legacy)
 ui/             MainViewModel (StateFlow), MainScreen, screens/ (Commands, Chat, Log, Settings),
                 components/ (glass-morphism UI, folder picker), theme/

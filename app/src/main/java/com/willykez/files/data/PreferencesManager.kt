@@ -25,6 +25,7 @@ class PreferencesManager(private val context: Context) {
         val CONFIRM_BEFORE_RUN = booleanPreferencesKey("confirm_before_run")
         val AUTO_PROTECT_ENABLED = booleanPreferencesKey("auto_protect_enabled")
         val AUTOMATION_NOTIFICATIONS = booleanPreferencesKey("automation_notifications")
+        val AI_PROVIDER = stringPreferencesKey("ai_provider")
     }
 
     val selectedCommandNames: Flow<Set<String>> =
@@ -91,4 +92,8 @@ class PreferencesManager(private val context: Context) {
 
     val automationNotifications: Flow<Boolean> = context.dataStore.data.map { it[Keys.AUTOMATION_NOTIFICATIONS] ?: true }
     suspend fun setAutomationNotifications(v: Boolean) { context.dataStore.edit { it[Keys.AUTOMATION_NOTIFICATIONS] = v } }
+
+    /** Which AI provider is active — stores a [com.willykez.files.data.model.AiProvider] name. */
+    val aiProvider: Flow<String> = context.dataStore.data.map { it[Keys.AI_PROVIDER] ?: "GEMINI" }
+    suspend fun setAiProvider(name: String) { context.dataStore.edit { it[Keys.AI_PROVIDER] = name } }
 }

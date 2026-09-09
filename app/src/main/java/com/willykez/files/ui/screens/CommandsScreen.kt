@@ -1,5 +1,7 @@
 package com.willykez.files.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,7 +23,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
@@ -33,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -296,14 +298,18 @@ private fun CategorySection(
                     }
                     Spacer(Modifier.width(8.dp))
                 }
+                val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "chevronRotation")
                 Icon(
-                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = null, tint = TextMid
+                    Icons.Filled.ExpandMore,
+                    contentDescription = null, tint = TextMid,
+                    modifier = Modifier.rotate(rotation)
                 )
             }
-            if (expanded) {
-                commands.forEach { command ->
-                    CommandRow(command = command, isSelected = command in selected, onClick = { onToggleCommand(command) })
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    commands.forEach { command ->
+                        CommandRow(command = command, isSelected = command in selected, onClick = { onToggleCommand(command) })
+                    }
                 }
             }
         }

@@ -5,19 +5,23 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.willykez.files.BuildConfig
 import com.willykez.files.data.ApiKeyManager
+import com.willykez.files.data.AutomationRulesManager
 import com.willykez.files.data.MetadataManager
 import com.willykez.files.data.PreferencesManager
 import com.willykez.files.data.model.ActionStatus
+import com.willykez.files.data.model.AiProvider
+import com.willykez.files.data.model.AutomationRule
 import com.willykez.files.data.model.Category
 import com.willykez.files.data.model.CommandType
 import com.willykez.files.data.model.CustomAction
 import com.willykez.files.data.model.ExecutionResult
 import com.willykez.files.data.model.FileMetadata
+import com.willykez.files.domain.AiClient
+import com.willykez.files.domain.AiClientFactory
 import com.willykez.files.domain.CommandExecutor
 import com.willykez.files.domain.CommandMatcher
 import com.willykez.files.domain.CommandParser
 import com.willykez.files.domain.CustomCommandParser
-import com.willykez.files.domain.GeminiClient
 import com.willykez.files.domain.ProtectionRules
 import com.willykez.files.domain.ScanProgress
 import com.willykez.files.domain.StorageScanner
@@ -60,6 +64,24 @@ data class ChatMessage(
 /** Which storage volume(s) the Commands tab and executor should act on. Overridden per-run
  *  whenever a specific folder is picked via [UiState.selectedFolder]. */
 enum class StorageScope { ALL, INTERNAL, SD_CARD }
+
+/** Routes a folder-picker selection to the right place — the manual scope, or an in-progress
+ *  automation rule draft. */
+enum class FolderPickerTarget { MANUAL_SCOPE, RULE_DRAFT }
+
+/** In-progress edits for a new or existing [AutomationRule], held in [UiState] while its editor
+ *  dialog is open. */
+data class AutomationRuleDraft(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "",
+    val commands: Set<CommandType> = emptySet(),
+    val folderPath: String? = null,
+    val folderLabel: String? = null,
+    val storageScope: StorageScope = StorageScope.ALL,
+    val intervalHours: Int = 24,
+    val enabled: Boolean = true,
+    val isNew: Boolean = true
+)
 
 data class VolumeInfo(
     val root: String,
@@ -124,7 +146,8 @@ data class UiState(
     val userProtectedFolders: Set<String> = emptySet(),
 
     // ---- Settings ----
-    val apiKeyConfigured: Boolean = false,
+    val aiProvider: AiProvider = AiProvider.default,
+    val apiKeyConfiguredProviders: Set<AiProvider> = emptySet(),
     val apiKeyMaskedPreview: String? = null,
     val apiKeyTesting: Boolean = false,
     val apiKeyTestMessage: String? = null,
@@ -132,10 +155,18 @@ data class UiState(
     val autoRescanAfterCommands: Boolean = false,
     val confirmBeforeRun: Boolean = true,
     val autoProtectEnabled: Boolean = true,
-    val automationNotificationsEnabled: Boolean = true
+    val automationNotificationsEnabled: Boolean = true,
+
+    // Custom, folder-scoped automation rules.
+    val automationRules: List<AutomationRule> = emptyList(),
+    val ruleEditorOpen: Boolean = false,
+    val ruleEditorDraft: AutomationRuleDraft? = null,
+    val folderPickerTarget: FolderPickerTarget = FolderPickerTarget.MANUAL_SCOPE
 ) {
     val effectiveProtectedRoots: Set<String>
         get() = (if (autoProtectEnabled) autoProtectedRoots else emptySet()) + userProtectedFolders
+
+    val apiKeyConfigured: Boolean get() = aiProvider in apiKeyConfiguredProviders
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -146,8 +177,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = PreferencesManager(application)
     private val volumeManager = StorageVolumeManager(application)
     private val apiKeyManager = ApiKeyManager(application)
-    private val gemini = GeminiClient { apiKeyManager.getApiKey() ?: BuildConfig.GEMINI_API_KEY }
+    private val automationRulesManager = AutomationRulesManager(application)
     private val chatContextHistory = mutableListOf<String>()
+
+    /** Builds a fresh client for whichever provider is currently selected — Gemini alone also
+     *  falls back to a build-time key (`local.properties`/CI secret) if the user hasn't entered
+     *  one of their own; the other providers are runtime-key-only. */
+    private fun activeAiClient(): AiClient {
+        val provider = _uiState.value.aiProvider
+        return AiClientFactory.create(provider) {
+            apiKeyManager.getApiKey(provider) ?: (if (provider == AiProvider.GEMINI) BuildConfig.GEMINI_API_KEY else "")
+        }
+    }
 
     private var executionJob: Job? = null
 
@@ -196,14 +237,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             preferences.protectedFolders.collectLatest { folders -> _uiState.update { it.copy(userProtectedFolders = folders) } }
         }
+        viewModelScope.launch {
+            val savedProvider = runCatching { preferences.aiProvider.first() }.getOrDefault("GEMINI")
+            val provider = runCatching { AiProvider.valueOf(savedProvider) }.getOrDefault(AiProvider.default)
+            _uiState.update { it.copy(aiProvider = provider) }
+        }
         // Warm up EncryptedSharedPreferences off the main thread, then reflect its state reactively.
         viewModelScope.launch(Dispatchers.IO) {
-            apiKeyManager.refreshHasKey()
+            apiKeyManager.refreshConfiguredProviders()
         }
         viewModelScope.launch {
-            apiKeyManager.hasKey.collectLatest { has ->
-                val masked = if (has) withContextIo { apiKeyManager.maskedPreview() } else null
-                _uiState.update { it.copy(apiKeyConfigured = has, apiKeyMaskedPreview = masked) }
+            apiKeyManager.configuredProviders.collectLatest { configured ->
+                _uiState.update { state ->
+                    val masked = if (state.aiProvider in configured) withContextIo { apiKeyManager.maskedPreview(state.aiProvider) } else null
+                    state.copy(apiKeyConfiguredProviders = configured, apiKeyMaskedPreview = masked)
+                }
             }
         }
         viewModelScope.launch {
@@ -220,6 +268,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             preferences.automationNotifications.collectLatest { v -> _uiState.update { it.copy(automationNotificationsEnabled = v) } }
+        }
+        viewModelScope.launch {
+            val rules = automationRulesManager.loadRules()
+            _uiState.update { it.copy(automationRules = rules) }
         }
         refreshVolumes()
     }
@@ -289,7 +341,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openFolderPicker() {
         val start = _uiState.value.volumes.firstOrNull { it.isPrimary }?.root ?: _uiState.value.volumes.firstOrNull()?.root
-        _uiState.update { it.copy(folderPickerOpen = true, folderPickerCurrentPath = start) }
+        _uiState.update { it.copy(folderPickerOpen = true, folderPickerCurrentPath = start, folderPickerTarget = FolderPickerTarget.MANUAL_SCOPE) }
+        if (start != null) loadFolderPickerEntries(start)
+    }
+
+    /** Opens the same folder browser, but routes the selection into the in-progress automation
+     *  rule draft instead of the manual scope. */
+    fun openFolderPickerForRuleDraft() {
+        val start = _uiState.value.volumes.firstOrNull { it.isPrimary }?.root ?: _uiState.value.volumes.firstOrNull()?.root
+        _uiState.update { it.copy(folderPickerOpen = true, folderPickerCurrentPath = start, folderPickerTarget = FolderPickerTarget.RULE_DRAFT) }
         if (start != null) loadFolderPickerEntries(start)
     }
 
@@ -324,10 +384,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Applies the chosen folder to whichever target opened the picker — the manual scope, or an
+     *  in-progress automation rule draft. */
     fun selectFolderScope(path: String) {
         val label = File(path).name.ifBlank { path }
-        _uiState.update { it.copy(selectedFolder = path, selectedFolderLabel = label, folderPickerOpen = false) }
-        refreshPreview()
+        when (_uiState.value.folderPickerTarget) {
+            FolderPickerTarget.MANUAL_SCOPE -> {
+                _uiState.update { it.copy(selectedFolder = path, selectedFolderLabel = label, folderPickerOpen = false) }
+                refreshPreview()
+            }
+            FolderPickerTarget.RULE_DRAFT -> {
+                _uiState.update {
+                    val draft = it.ruleEditorDraft ?: return@update it
+                    it.copy(ruleEditorDraft = draft.copy(folderPath = path, folderLabel = label), folderPickerOpen = false)
+                }
+            }
+        }
     }
 
     fun clearFolderScope() {
@@ -580,29 +652,148 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---- custom automation rules ----------------------------------------------------------
+
+    /** Opens the rule editor — either a blank draft for a new rule, or a pre-filled one for
+     *  editing an existing rule. */
+    fun openRuleEditor(existing: AutomationRule? = null) {
+        val draft = if (existing != null) {
+            AutomationRuleDraft(
+                id = existing.id,
+                name = existing.name,
+                commands = existing.commandNames.mapNotNull { runCatching { CommandType.valueOf(it) }.getOrNull() }.toSet(),
+                folderPath = existing.folderPath,
+                folderLabel = existing.folderLabel,
+                storageScope = runCatching { StorageScope.valueOf(existing.storageScope) }.getOrDefault(StorageScope.ALL),
+                intervalHours = existing.intervalHours,
+                enabled = existing.enabled,
+                isNew = false
+            )
+        } else {
+            AutomationRuleDraft()
+        }
+        _uiState.update { it.copy(ruleEditorOpen = true, ruleEditorDraft = draft) }
+    }
+
+    fun closeRuleEditor() {
+        _uiState.update { it.copy(ruleEditorOpen = false, ruleEditorDraft = null) }
+    }
+
+    fun updateRuleDraftName(name: String) {
+        _uiState.update { it.copy(ruleEditorDraft = it.ruleEditorDraft?.copy(name = name)) }
+    }
+
+    fun toggleRuleDraftCommand(command: CommandType) {
+        _uiState.update { state ->
+            val draft = state.ruleEditorDraft ?: return@update state
+            val commands = draft.commands.toMutableSet()
+            if (!commands.add(command)) commands.remove(command)
+            state.copy(ruleEditorDraft = draft.copy(commands = commands))
+        }
+    }
+
+    fun setRuleDraftInterval(hours: Int) {
+        _uiState.update { it.copy(ruleEditorDraft = it.ruleEditorDraft?.copy(intervalHours = hours)) }
+    }
+
+    fun setRuleDraftStorageScope(scope: StorageScope) {
+        _uiState.update { it.copy(ruleEditorDraft = it.ruleEditorDraft?.copy(storageScope = scope, folderPath = null, folderLabel = null)) }
+    }
+
+    fun clearRuleDraftFolder() {
+        _uiState.update { it.copy(ruleEditorDraft = it.ruleEditorDraft?.copy(folderPath = null, folderLabel = null)) }
+    }
+
+    /** Saves the current draft as an [AutomationRule], persists it, and (re)schedules its
+     *  WorkManager job. No-ops silently if the draft is missing a name or has no commands picked —
+     *  the editor UI disables the save button in that case rather than surfacing an error here. */
+    fun saveRuleDraft() {
+        val draft = _uiState.value.ruleEditorDraft ?: return
+        if (draft.name.isBlank() || draft.commands.isEmpty()) return
+
+        val rule = AutomationRule(
+            id = draft.id,
+            name = draft.name.trim(),
+            commandNames = draft.commands.map { it.name },
+            folderPath = draft.folderPath,
+            folderLabel = draft.folderLabel,
+            storageScope = draft.storageScope.name,
+            intervalHours = draft.intervalHours,
+            enabled = draft.enabled
+        )
+
+        viewModelScope.launch {
+            val updated = automationRulesManager.upsertRule(rule)
+            _uiState.update { it.copy(automationRules = updated, ruleEditorOpen = false, ruleEditorDraft = null) }
+            if (rule.enabled) {
+                com.willykez.files.automation.AutomationScheduler.scheduleRule(getApplication(), rule.id, rule.intervalHours)
+            } else {
+                com.willykez.files.automation.AutomationScheduler.cancelRule(getApplication(), rule.id)
+            }
+        }
+    }
+
+    fun deleteRule(id: String) {
+        viewModelScope.launch {
+            val updated = automationRulesManager.removeRule(id)
+            _uiState.update { it.copy(automationRules = updated) }
+            com.willykez.files.automation.AutomationScheduler.cancelRule(getApplication(), id)
+        }
+    }
+
+    fun setRuleEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch {
+            val rule = automationRulesManager.getRule(id) ?: return@launch
+            val updatedRule = rule.copy(enabled = enabled)
+            val updated = automationRulesManager.upsertRule(updatedRule)
+            _uiState.update { it.copy(automationRules = updated) }
+            if (enabled) {
+                com.willykez.files.automation.AutomationScheduler.scheduleRule(getApplication(), id, updatedRule.intervalHours)
+            } else {
+                com.willykez.files.automation.AutomationScheduler.cancelRule(getApplication(), id)
+            }
+        }
+    }
+
     // ---- settings --------------------------------------------------------------------
 
-    /** Saves a user-entered Gemini API key, encrypted on-device. Takes priority over any
-     *  build-time key from `local.properties`/CI secret while set. */
+    /** Switches the active AI provider — chat and custom-command parsing pick this up on the
+     *  very next request, since [activeAiClient] builds fresh each time rather than caching. */
+    fun setAiProvider(provider: AiProvider) {
+        viewModelScope.launch {
+            preferences.setAiProvider(provider.name)
+            val masked = withContextIo { apiKeyManager.maskedPreview(provider) }
+            _uiState.update {
+                it.copy(aiProvider = provider, apiKeyMaskedPreview = masked, apiKeyTestMessage = null)
+            }
+        }
+    }
+
+    /** Saves a user-entered API key for the currently selected provider, encrypted on-device.
+     *  For Gemini specifically, this takes priority over any build-time key from
+     *  `local.properties`/CI secret while set. */
     fun saveApiKey(key: String) {
         if (key.isBlank()) return
+        val provider = _uiState.value.aiProvider
         viewModelScope.launch(Dispatchers.IO) {
-            apiKeyManager.setApiKey(key)
-            _uiState.update { it.copy(apiKeyTestMessage = null) }
+            apiKeyManager.setApiKey(provider, key)
+            val masked = apiKeyManager.maskedPreview(provider)
+            _uiState.update { it.copy(apiKeyMaskedPreview = masked, apiKeyTestMessage = null) }
         }
     }
 
     fun clearApiKey() {
+        val provider = _uiState.value.aiProvider
         viewModelScope.launch(Dispatchers.IO) {
-            apiKeyManager.clearApiKey()
-            _uiState.update { it.copy(apiKeyTestMessage = null) }
+            apiKeyManager.clearApiKey(provider)
+            _uiState.update { it.copy(apiKeyMaskedPreview = null, apiKeyTestMessage = null) }
         }
     }
 
     fun testApiKey() {
         _uiState.update { it.copy(apiKeyTesting = true, apiKeyTestMessage = null) }
         viewModelScope.launch {
-            val result = gemini.testConnection()
+            val result = activeAiClient().testConnection()
             _uiState.update {
                 it.copy(
                     apiKeyTesting = false,
@@ -662,8 +853,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             val meta = _uiState.value.metadata
+            val aiClient = activeAiClient()
             val prompt = buildChatPrompt(meta, msg)
-            val reply = gemini.complete(prompt) ?: fallbackChatReply(msg, meta)
+            val reply = aiClient.complete(prompt) ?: fallbackChatReply(msg, meta)
 
             chatContextHistory += "user: $msg"
             chatContextHistory += "assistant: $reply"
@@ -682,7 +874,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (detected == null && meta.isNotEmpty() && looksLikeCustomInstruction(msg)) {
                 val volumes = volumeManager.listVolumes()
                 val availableFolders = meta.map { it.parentPath }.toHashSet()
-                val customAction = CustomCommandParser.parseWithAi(msg, gemini, volumes, availableFolders)
+                val customAction = CustomCommandParser.parseWithAi(msg, aiClient, volumes, availableFolders)
                 if (customAction != null) {
                     val matched = CustomCommandParser.matchFiles(customAction, meta)
                     pending = PendingCustomAction(customAction, matched)

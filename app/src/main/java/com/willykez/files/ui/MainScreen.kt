@@ -5,14 +5,17 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
@@ -31,12 +34,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.willykez.files.data.model.CommandType
+import com.willykez.files.ui.components.AuroraBackground
 import com.willykez.files.ui.components.FolderPickerDialog
 import com.willykez.files.ui.components.GlowButton
 import com.willykez.files.ui.screens.ChatScreen
@@ -44,8 +50,8 @@ import com.willykez.files.ui.screens.CommandsBottomBar
 import com.willykez.files.ui.screens.CommandsScreen
 import com.willykez.files.ui.screens.LogScreen
 import com.willykez.files.ui.screens.SettingsScreen
+import com.willykez.files.ui.theme.Aurora1
 import com.willykez.files.ui.theme.Aurora2
-import com.willykez.files.ui.theme.BgSpace
 import com.willykez.files.ui.theme.BorderGlass
 import com.willykez.files.ui.theme.ErrorRed
 import com.willykez.files.ui.theme.Glass
@@ -68,15 +74,20 @@ fun MainScreen(
     val context = LocalContext.current
     var showConfirmExecute by remember { mutableStateOf(false) }
 
+    AuroraBackground {
     Scaffold(
-        containerColor = BgSpace,
+        containerColor = Color.Transparent,
         topBar = {
             Column {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text("File Organizer", color = TextMain, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, fontSize = 17.sp)
-                            Text(state.scanLabel, color = TextMid, fontSize = 11.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            AppLogo()
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text("File Organizer", color = TextMain, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, fontSize = 17.sp)
+                                Text(state.scanLabel, color = TextMid, fontSize = 11.sp)
+                            }
                         }
                     },
                     actions = {
@@ -93,14 +104,14 @@ fun MainScreen(
                             )
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = BgSpace)
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                 )
                 if (!state.hasStoragePermission) {
                     PermissionBanner(onRequestStoragePermission)
                 }
                 TabRow(
                     selectedTabIndex = state.activeTab,
-                    containerColor = BgSpace,
+                    containerColor = Color.Transparent,
                     contentColor = Primary,
                     divider = {}
                 ) {
@@ -112,6 +123,7 @@ fun MainScreen(
                         )
                     }
                 }
+                GradientDivider()
             }
         },
         bottomBar = {
@@ -127,7 +139,7 @@ fun MainScreen(
             }
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).background(BgSpace)) {
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             when (state.activeTab) {
                 0 -> CommandsScreen(
                     state = state,
@@ -161,6 +173,7 @@ fun MainScreen(
                 )
                 3 -> SettingsScreen(
                     state = state,
+                    onSetAiProvider = viewModel::setAiProvider,
                     onSaveApiKey = viewModel::saveApiKey,
                     onClearApiKey = viewModel::clearApiKey,
                     onTestApiKey = viewModel::testApiKey,
@@ -180,11 +193,29 @@ fun MainScreen(
                         if (enabled) onRequestNotificationPermission()
                         viewModel.setAutomationNotificationsEnabled(enabled)
                     },
-                    onClearScanData = viewModel::clearScanData
+                    onClearScanData = viewModel::clearScanData,
+                    onOpenRuleEditor = viewModel::openRuleEditor,
+                    onCloseRuleEditor = viewModel::closeRuleEditor,
+                    onUpdateRuleDraftName = viewModel::updateRuleDraftName,
+                    onToggleRuleDraftCommand = viewModel::toggleRuleDraftCommand,
+                    onSetRuleDraftInterval = viewModel::setRuleDraftInterval,
+                    onSetRuleDraftStorageScope = viewModel::setRuleDraftStorageScope,
+                    onOpenFolderPickerForRuleDraft = viewModel::openFolderPickerForRuleDraft,
+                    onClearRuleDraftFolder = viewModel::clearRuleDraftFolder,
+                    onSaveRuleDraft = {
+                        if (state.ruleEditorDraft?.enabled == true) onRequestNotificationPermission()
+                        viewModel.saveRuleDraft()
+                    },
+                    onDeleteRule = viewModel::deleteRule,
+                    onSetRuleEnabled = { id, enabled ->
+                        if (enabled) onRequestNotificationPermission()
+                        viewModel.setRuleEnabled(id, enabled)
+                    }
                 )
             }
         }
     }
+    } // end AuroraBackground
 
     if (showConfirmExecute) {
         val destructive = state.selectedCommands.any {
@@ -233,6 +264,35 @@ fun MainScreen(
             onDismiss = viewModel::closeFolderPicker
         )
     }
+}
+
+@Composable
+private fun AppLogo() {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(
+                Brush.linearGradient(listOf(Aurora1, Aurora2))
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("📂", fontSize = 15.sp)
+    }
+}
+
+@Composable
+private fun GradientDivider() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(
+                Brush.horizontalGradient(
+                    listOf(Color.Transparent, BorderGlass, Color.Transparent)
+                )
+            )
+    )
 }
 
 @Composable
