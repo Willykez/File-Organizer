@@ -43,16 +43,36 @@ object ProtectionRules {
             }
         }
 
-        // Firmware dumps: group by parent-of-parent to find folders whose direct children include
-        // several firmware-looking names. Metadata only has files, so infer subfolder names from
-        // any file's parentPath tail relative to a candidate ancestor two levels up.
-        val parentDirs = metadata.map { it.parentPath }.toHashSet()
-        val byGrandparent = parentDirs.groupBy { path -> path.substringBeforeLast('/', missingDelimiterValue = "") }
-        for ((candidateRoot, children) in byGrandparent) {
-            if (candidateRoot.isBlank()) continue
-            val childNames = children.map { it.substringAfterLast('/') }.toSet()
-            val hits = FIRMWARE_SIBLING_MARKERS.count { it in childNames }
-            if (hits >= FIRMWARE_MARKER_THRESHOLD) roots += candidateRoot
+        // Firmware dumps: walk every ancestor directory segment of each file — not just its
+        // immediate parent — since a real ROM dump almost always nests files several levels below
+        // a marker folder (e.g. "vendor/etc/init.rc", "META-INF/com/google/android/update-binary"),
+        // so that marker name would never show up as anyone's *immediate* parent-of-parent. Also
+        // check the file's own name, since boot.img/recovery.img are markers that are files
+        // themselves, sitting directly in the dump root rather than being folder names. A root
+        // qualifies once at least FIRMWARE_MARKER_THRESHOLD distinct marker names are found
+        // (at any depth) as its descendants.
+        val markerHitsByRoot = HashMap<String, MutableSet<String>>()
+        fun recordHit(root: String, marker: String) {
+            if (root.isBlank()) return
+            markerHitsByRoot.getOrPut(root) { mutableSetOf() }.add(marker)
+        }
+
+        for (meta in metadata) {
+            if (meta.name in FIRMWARE_SIBLING_MARKERS) {
+                recordHit(meta.parentPath, meta.name)
+            }
+            var pathSoFar = ""
+            for (segment in meta.parentPath.split('/')) {
+                if (segment.isEmpty()) continue
+                pathSoFar += "/$segment"
+                if (segment in FIRMWARE_SIBLING_MARKERS) {
+                    recordHit(pathSoFar.substringBeforeLast('/'), segment)
+                }
+            }
+        }
+
+        for ((root, hits) in markerHitsByRoot) {
+            if (hits.size >= FIRMWARE_MARKER_THRESHOLD) roots += root
         }
 
         return roots
